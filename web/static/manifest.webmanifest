@@ -1,0 +1,15 @@
+{
+  "name": "Personal Growth OS",
+  "short_name": "Growth",
+  "description": "个人成长任务系统：今日任务 / 计划进度 / 信息雷达 / 周报",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0f172a",
+  "theme_color": "#111827",
+  "icons": [
+    {"src": "/static/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
+    {"src": "/static/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable"}
+  ]
+}
