@@ -1064,10 +1064,10 @@ def api_overview():
         if cd:
             heat[cd] = heat.get(cd, 0) + 1
     heat_weeks = []
-    # 按周分组（周一为起点），每天一个格
+    # 按周分组（周一为起点），每天一个格；覆盖到今天所在周（含今天）
     cur = start - timedelta(days=start.weekday())
     day_names = ["一","二","三","四","五","六","日"]
-    for w in range(26):
+    while cur <= d:
         week = []
         for i in range(7):
             day = cur + timedelta(days=i)
