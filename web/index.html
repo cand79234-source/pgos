@@ -1,3 +1,4 @@
+```html
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -70,7 +71,7 @@ async function load(){
   $('bar').style.width=d.progress.pct+'%';
   $('pct').textContent=d.progress.pct+'% 今日进度';
   $('cnt').textContent=`${d.progress.done} / ${d.progress.total} 已完成`;
-  const nu=d.nextup;
+  const nu=d.next_up;
   $('nextup').style.display=nu?'':'none';
   if(nu)$('nextup').innerHTML='▸ 下一项：<b>'+esc(nu.title)+'</b>'+(nu.duration?' · 预计 '+nu.duration:'');
 
@@ -173,7 +174,7 @@ function card(t){
   }
   if(t.status==='completed')ops=`<button class="btn" onclick="op('${t.id}','pending')">撤销完成</button>`;
   const borderCss = doneCss ? 'done' : (t.status==='postponed'?'late':'');
-  return `<div class="task ${borderCss}"><div class="tt">${esc(t.title)}</div><div class="tm">${chips.join('')}</div>${t.notes?`<div class="tn">${esc(t.notes)}</div>`:''}<div class="ops">${ops}</div></div>`;
+  return `<div class="task ${borderCss}"><div class="tt">${esc(t.title)}</div><div class="tm">${chips.join('')}</div>${t.notes?`<div class="tn">${esc(t.notes)}`:''}<div class="ops">${ops}</div></div>`;
 }
 
 async function op(id,status){
@@ -227,3 +228,4 @@ function celebrate(){
 </script>
 </body>
 </html>
+```
