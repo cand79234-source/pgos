@@ -1,3 +1,4 @@
+```html
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -100,10 +101,10 @@ async function load(){
 
   // 数据看板
   $('board').innerHTML = d.board.map(b=>{
-    const pct = b.pct!=null ? b.pct+'%' : '—';
+    const pct = b.global_pct!=null ? b.global_pct+'%' : '—';
     const rem = b.remaining!=null ? `还剩<b style="color:#fbbf24">${b.remaining}</b>天` : '';
-    let pos = b.cur_unit || '';
-    if(b.cur_week!=null)pos=(b.id==='english'?'主题周':'Week ')+b.cur_week+' '+(b.cur_day!=null?'Day '+b.cur_day:'');
+    let pos = b.stage_name || '';
+    if(b.done_study_days!=null) pos += (pos?' · ':'') + '已学 ' + b.done_study_days + ' 天';
     // 自媒体视频显示累计条数
     let subMeta = `累计 ${b.done_days} 天 · ${rem}`;
     if(b.output_count!=null) subMeta = `已输出 <b style="color:#fbbf24">${b.output_count}</b> 条 · ${rem}`;
@@ -115,14 +116,13 @@ async function load(){
 
   // 里程碑地图
   $('milestones').innerHTML = d.milestones.map(m=>{
-    const nodes = m.nodes.map(n=>{
-      const cls = n.done?'done':(n.current?'current':'');
-      const subs = n.sub && n.sub.length ? `<span class="subs">${n.sub.map(esc).join(' · ')}</span>`:'';
-      return `<span class="node ${cls}">${n.done?'✅ ':''}${n.current?'📍':''}${esc(n.full||n.name)}${subs}</span>`;
+    const nodes = (m.weeks_detail||[]).map(w=>{
+      const cls = w.week < m.cur_week ? 'done' : (w.week === m.cur_week ? 'current' : '');
+      return `<span class="node ${cls}">${cls==='done'?'✓ ':''}${cls==='current'?'📍 ':''}W${w.week} ${esc(w.topic)}</span>`;
     }).join('');
     return `<div class="milestone">
-      <div class="mh"><span>${esc(m.name)}</span><span style="color:var(--brand);font-size:13px">${m.pct}%</span></div>
-      <div class="mbar"><i style="width:${m.pct}%"></i></div>
+      <div class="mh"><span>${esc(m.name)}</span><span style="color:var(--brand);font-size:13px">${m.global_pct}%</span></div>
+      <div class="mbar"><i style="width:${m.global_pct}%"></i></div>
       <div class="nodes">${nodes}</div>
     </div>`;
   }).join('')||'<div class="empty">暂无里程碑</div>';
@@ -141,3 +141,4 @@ load();
 </script>
 </body>
 </html>
+```
