@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0,viewport-fit=cover">
+<title>总览 · Personal Growth OS</title>
+<link rel="stylesheet" href="/static/style.css">
+<link rel="manifest" href="/static/manifest.webmanifest">
+<meta name="theme-color" content="#111827">
+<link rel="apple-touch-icon" href="/static/icon-192.png">
+<style>
+:root{--green:#16a34a}
+.wrap{max-width:560px;margin:0 auto;padding:14px 16px 40px}
+.ov-card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;margin-bottom:14px;box-shadow:var(--sh)}
+.ov-title{font-weight:800;font-size:15px;margin-bottom:12px;display:flex;align-items:center;gap:8px}
+.ov-title .ic{font-size:18px}
+.ov-sub{font-size:12px;color:var(--muted);margin-bottom:10px}
+/* 热力图 */
+.heat{display:flex;gap:3px;overflow-x:auto;padding-bottom:6px}
+.heat-col{display:flex;flex-direction:column;gap:3px}
+.heat-cell{width:12px;height:12px;border-radius:3px;background:#eef2f7}
+.heat-cell.l1{background:#c6e9c8}
+.heat-cell.l2{background:#86d28a}
+.heat-cell.l3{background:#4cbf57}
+.heat-cell.l4{background:var(--green)}
+.heat-cell.today{outline:2px solid var(--brand2)}
+.heat-cell.future{background:#f6f8fb}
+.heat-legend{display:flex;align-items:center;gap:4px;font-size:11px;color:var(--muted);margin-top:8px}
+.heat-legend .cell{width:11px;height:11px;border-radius:3px}
+/* 里程碑 */
+.milestone{margin-bottom:12px}
+.milestone .mh{font-weight:700;font-size:14px;display:flex;justify-content:space-between;align-items:center}
+.milestone .mbar{height:8px;background:#eef2f7;border-radius:99px;overflow:hidden;margin:7px 0}
+.milestone .mbar i{display:block;height:100%;background:linear-gradient(90deg,var(--brand2),var(--brand));border-radius:99px;transition:width .5s}
+.nodes{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.node{font-size:11px;padding:4px 9px;border-radius:99px;background:#f1f5f9;color:#64748b;font-weight:600}
+.node.done{background:#dcfce7;color:#15803d;text-decoration:none}
+.node.current{background:var(--brand-bg);color:var(--brand);border:1.5px solid var(--brand);box-shadow:0 0 0 3px rgba(251,191,36,.15)}
+.node .subs{display:block;font-size:10px;color:#94a3b8;font-weight:500;margin-top:1px}
+.node.done .subs{color:#86d28a}
+/* 看板 */
+.board-row{display:flex;align-items:center;justify-content:space-between;padding:9px 0;border-bottom:1px dashed var(--line)}
+.board-row:last-child{border-bottom:none}
+.board-name{font-weight:700;font-size:13px}
+.board-goal{font-size:11px;color:var(--muted);margin-top:2px}
+.board-meta{text-align:right;font-size:12px;color:#334155}
+.board-meta b{font-size:15px;color:var(--brand)}
+.board-pct{font-size:11px;color:var(--muted);margin-top:2px}
+@media(prefers-color-scheme:dark){.heat-cell{background:#2a3342}.heat-cell.future{background:#232b38}}
+</style>
+</head>
+<body>
+<nav class="nav">
+  <div class="logo">Personal Growth OS<small>OVERVIEW</small></div>
+  <div class="tabs"><a href="/">Today</a><a href="/overview" class="on">总览</a><a href="/reviews">Reviews</a></div>
+</nav>
+<div class="wrap">
+  <div id="dateStr" class="ov-sub" style="margin-top:4px"></div>
+
+  <!-- 数据看板 -->
+  <div class="ov-card">
+    <div class="ov-title"><span class="ic">📊</span>数据看板</div>
+    <div id="board"></div>
+  </div>
+
+  <!-- 里程碑地图 -->
+  <div class="ov-card">
+    <div class="ov-title"><span class="ic">🗺️</span>里程碑地图</div>
+    <div class="ov-sub">绿色=已完成 · 黄色=当前位置 · 灰=未开始</div>
+    <div id="milestones"></div>
+  </div>
+
+  <!-- 日历热力图 -->
+  <div class="ov-card">
+    <div class="ov-title"><span class="ic">🔥</span>执行热力图</div>
+    <div class="ov-sub">近 26 周每天完成情况（颜色越深完成越多）</div>
+    <div class="heat" id="heat"></div>
+    <div class="heat-legend">
+      <span>少</span>
+      <span class="cell" style="background:#eef2f7"></span>
+      <span class="cell" style="background:#c6e9c8"></span>
+      <span class="cell" style="background:#86d28a"></span>
+      <span class="cell" style="background:#4cbf57"></span>
+      <span class="cell" style="background:#16a34a"></span>
+      <span>多</span>
+    </div>
+  </div>
+
+  <footer>Personal Growth OS · 长期计划=路线图 · 执行记录=当前位置</footer>
+</div>
+
+<script>
+const $=id=>document.getElementById(id);
+const esc=s=>(s??'').toString().replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+async function load(){
+  const r=await fetch('/api/overview');const d=await r.json();
+  const dd=new Date(d.date+'T00:00:00');
+  $('dateStr').textContent=`${dd.getMonth()+1}月${dd.getDate()}日 · 周${'日一二三四五六'[dd.getDay()]} · 执行总览`;
+
+  // 数据看板
+  $('board').innerHTML = d.board.map(b=>{
+    const pct = b.pct!=null ? b.pct+'%' : '—';
+    const rem = b.remaining!=null ? `还剩<b style="color:#fbbf24">${b.remaining}</b>天` : '';
+    let pos = b.cur_unit || '';
+    if(b.cur_week!=null)pos=(b.id==='english'?'主题周':'Week ')+b.cur_week+' '+(b.cur_day!=null?'Day '+b.cur_day:'');
+    // 自媒体视频显示累计条数
+    let subMeta = `累计 ${b.done_days} 天 · ${rem}`;
+    if(b.output_count!=null) subMeta = `已输出 <b style="color:#fbbf24">${b.output_count}</b> 条 · ${rem}`;
+    return `<div class="board-row">
+      <div><div class="board-name">${esc(b.name)}</div><div class="board-goal">${esc(b.goal||'')}${pos?' · '+esc(pos):''}</div></div>
+      <div class="board-meta"><b>${pct}</b><div class="board-pct">${subMeta}</div></div>
+    </div>`;
+  }).join('')||'<div class="empty">暂无数据</div>';
+
+  // 里程碑地图
+  $('milestones').innerHTML = d.milestones.map(m=>{
+    const nodes = m.nodes.map(n=>{
+      const cls = n.done?'done':(n.current?'current':'');
+      const subs = n.sub && n.sub.length ? `<span class="subs">${n.sub.map(esc).join(' · ')}</span>`:'';
+      return `<span class="node ${cls}">${n.done?'✅ ':''}${n.current?'📍':''}${esc(n.full||n.name)}${subs}</span>`;
+    }).join('');
+    return `<div class="milestone">
+      <div class="mh"><span>${esc(m.name)}</span><span style="color:var(--brand);font-size:13px">${m.pct}%</span></div>
+      <div class="mbar"><i style="width:${m.pct}%"></i></div>
+      <div class="nodes">${nodes}</div>
+    </div>`;
+  }).join('')||'<div class="empty">暂无里程碑</div>';
+
+  // 热力图
+  $('heat').innerHTML = d.heat_weeks.map(wk=>
+    '<div class="heat-col">'+wk.map(c=>{
+      const cls = c.future?'future':('l'+c.level);
+      const title = c.date + (c.count>0?` · ${c.count}项完成`:'');
+      const today = c.today?' today':'';
+      return `<div class="heat-cell ${cls}${today}" title="${esc(title)}"></div>`;
+    }).join('')+'</div>'
+  ).join('');
+}
+load();
+</script>
+</body>
+</html>
