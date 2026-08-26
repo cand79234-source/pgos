@@ -35,8 +35,15 @@ def db():
         return c
     if IS_PG:
         import psycopg2
-        c = psycopg2.connect(DATABASE_URL)
+        dsn = DATABASE_URL
+        if "sslmode" not in dsn:
+            dsn += ("&" if "?" in dsn else "?") + "sslmode=require"
+        c = psycopg2.connect(dsn, connect_timeout=15)
         c.autocommit = False
+        try:
+            c.execute("SET lock_timeout='15s'; SET statement_timeout='60s'")
+        except Exception:
+            pass
         _local.conn = c
     else:
         c = sqlite3.connect(str(DB), timeout=10)
@@ -706,10 +713,16 @@ app = FastAPI(title="Personal Growth OS")
 
 @app.on_event("startup")
 def startup():
-    init_db()
-    seed()
-    gen_today()
-    start_scheduler()
+    try:
+        print("[startup] init_db ...", flush=True); init_db()
+        print("[startup] seed ...", flush=True); seed()
+        print("[startup] gen_today ...", flush=True); gen_today()
+        print("[startup] scheduler ...", flush=True); start_scheduler()
+        print("[startup] done ✅", flush=True)
+    except Exception as e:
+        import traceback
+        print("[startup] 启动步骤出错（服务仍会绑定端口，便于排查）:", flush=True)
+        traceback.print_exc()
 
 app.mount("/static", StaticFiles(directory=str(WEB / "static")), name="static")
 
