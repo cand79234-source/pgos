@@ -41,7 +41,8 @@ def db():
         c = psycopg2.connect(dsn, connect_timeout=15)
         c.autocommit = False
         try:
-            c.execute("SET lock_timeout='15s'; SET statement_timeout='60s'")
+            c.execute("SET lock_timeout='15s'")
+            c.execute("SET statement_timeout='60s'")
         except Exception:
             pass
         _local.conn = c
@@ -127,8 +128,10 @@ def push(title, body, click=None):
 
 # ==================== 初始化（双方言 schema） ====================
 def init_db():
+    print("[init_db] read schema.sql", flush=True)
     schema = (BASE / "schema.sql").read_text(encoding="utf-8")
     if IS_PG:
+        print("[init_db] PG mode", flush=True)
         # PostgreSQL 方言转换：自增主键 / 去掉 PRAGMA / OR REPLACE 语法
         schema = (schema.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "SERIAL PRIMARY KEY")
                         .replace("INSERT OR REPLACE INTO reviews", "INSERT INTO reviews"))
@@ -140,6 +143,7 @@ def init_db():
             s2 = "\n".join(lines).strip()
             if s2 and not s2.upper().startswith("PRAGMA"):
                 clean.append(s2)
+        print("[init_db] create tables", flush=True)
         for s in clean:
             try:
                 _exec(s)
@@ -149,6 +153,7 @@ def init_db():
                 try: db().rollback()
                 except Exception: pass
                 if "already exists" not in str(e): raise
+        print("[init_db] alter columns", flush=True)
         # 兼容迁移（老库补列）：失败单独回滚，不影响已建的表
         for alt in ("ALTER TABLE tasks ADD COLUMN advanced INTEGER DEFAULT 0",
                     "ALTER TABLE plans ADD COLUMN start_date TEXT",
@@ -178,7 +183,9 @@ def init_db():
         try: db().execute("ALTER TABLE tasks ADD COLUMN postponed_at TEXT")
         except Exception: pass
         db().commit()
+        print("[init_db] schema ok", flush=True)
     # 数据迁移：若 pgos_seed.json 存在且 plans 为空，自动恢复进度/新闻/周报
+    print("[init_db] check seed migration", flush=True)
     seedf = BASE / "pgos_seed.json"
     if seedf.exists() and q1("SELECT COUNT(*) AS n FROM plans")["n"] == 0:
         data = json.loads(seedf.read_text(encoding="utf-8"))
@@ -720,9 +727,10 @@ def startup():
         print("[startup] scheduler ...", flush=True); start_scheduler()
         print("[startup] done ✅", flush=True)
     except Exception as e:
-        import traceback
+        import traceback, sys
         print("[startup] 启动步骤出错（服务仍会绑定端口，便于排查）:", flush=True)
         traceback.print_exc()
+        sys.stdout.flush()
 
 app.mount("/static", StaticFiles(directory=str(WEB / "static")), name="static")
 
