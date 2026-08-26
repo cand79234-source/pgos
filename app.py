@@ -23,7 +23,7 @@ DATABASE_URL = os.environ.get("DATABASE_URL", "")
 IS_PG = bool(DATABASE_URL)
 CONFIG = {
     "ntfy_topic": os.environ.get("NTFY_TOPIC", "topic_workbuddy"),
-    "web_url": os.environ.get("WEB_URL", "https://aa794e79a5c6e2821.app.workbuddy.link"),
+    "web_url": os.environ.get("WEB_URL", "https://personal-growth-os-1wdg.onrender.com"),
 }
 
 # ==================== 数据库（SQLite / PostgreSQL 双模式） ====================
@@ -144,7 +144,11 @@ def init_db():
                 if "already exists" not in str(e): raise
         # 兼容迁移（老库补列）：失败单独回滚，不影响已建的表
         for alt in ("ALTER TABLE tasks ADD COLUMN advanced INTEGER DEFAULT 0",
-                    "ALTER TABLE plans ADD COLUMN start_date TEXT"):
+                    "ALTER TABLE plans ADD COLUMN start_date TEXT",
+                    "ALTER TABLE plans ADD COLUMN stage_details TEXT",
+                    "ALTER TABLE plans ADD COLUMN postpone_days INTEGER DEFAULT 0",
+                    "ALTER TABLE plans ADD COLUMN paused INTEGER DEFAULT 0",
+                    "ALTER TABLE tasks ADD COLUMN postponed_at TEXT"):
             try:
                 _exec(alt)
                 db().commit()
@@ -158,6 +162,14 @@ def init_db():
         except Exception: pass
         try: db().execute("ALTER TABLE plans ADD COLUMN start_date TEXT")
         except Exception: pass
+        try: db().execute("ALTER TABLE plans ADD COLUMN stage_details TEXT")
+        except Exception: pass
+        try: db().execute("ALTER TABLE plans ADD COLUMN postpone_days INTEGER DEFAULT 0")
+        except Exception: pass
+        try: db().execute("ALTER TABLE plans ADD COLUMN paused INTEGER DEFAULT 0")
+        except Exception: pass
+        try: db().execute("ALTER TABLE tasks ADD COLUMN postponed_at TEXT")
+        except Exception: pass
         db().commit()
     # 数据迁移：若 pgos_seed.json 存在且 plans 为空，自动恢复进度/新闻/周报
     seedf = BASE / "pgos_seed.json"
@@ -165,7 +177,7 @@ def init_db():
         data = json.loads(seedf.read_text(encoding="utf-8"))
         sd = today()
         for p in data.get("plans", []):
-            if not p.get("start_date"):
+            if not p.get("paused") and not p.get("start_date"):
                 p["start_date"] = sd
             cols = ",".join(p.keys()); ph = ",".join("?"*len(p))
             x(f"INSERT INTO plans({cols}) VALUES({ph})", tuple(p.values()))
@@ -205,6 +217,7 @@ def seed():
          "next_cp":"阶段0验证（第3个月末）","updated_at":t},
         {"id":"fae","name":"FAE 技术学习","goal":"6个月系统学习，具备应聘 FAE 助理/技术支持/技术销售的基础能力",
          "normal":"2h","minimum":"完成一个最小任务即可","frequency":"每周6天",
+         "paused":1,
          "route":J(fae_route),
          "checkpoints":J([{"w":4,"name":"C语言"},{"w":8,"name":"串口"},{"w":9,"name":"串口生死线","critical":True},
                           {"w":12,"name":"Linux"},{"w":16,"name":"项目验收"},{"w":20,"name":"选型"},{"w":24,"name":"面试"}]),
@@ -224,78 +237,227 @@ def seed():
     ]
     sd = today()
     for p in plans:
-        p["start_date"] = sd
+        if not p.get("paused"):
+            p["start_date"] = sd
         cols = ",".join(p.keys())
         ph = ",".join("?"*len(p))
         x(f"INSERT INTO plans({cols}) VALUES({ph})", tuple(p.values()))
 
-# ==================== 计划周期工具 ====================
-# 各计划的周期（用于倒推结束日期 / 剩余天数）
+# ==================== 计划周期与阶段进度 ====================
+# 阶段模型：English 6 阶段（各占全局 16.67%），FAE 3 节点（各占全局 33.3%）
+# 阶段周数按月数换算（1个月=4周）：阶段0/1 各3个月=12周，阶段2~5 各4个月=16周
+EN_STAGES = [
+    {"name": "阶段0：基础重建", "weeks": 12},
+    {"name": "阶段1：旅行场景", "weeks": 12},
+    {"name": "阶段2：工作沟通", "weeks": 16},
+    {"name": "阶段3：雅思输入", "weeks": 16},
+    {"name": "阶段4：雅思输出", "weeks": 16},
+    {"name": "阶段5：冲刺B2",   "weeks": 16},
+]
+FAE_STAGES = [
+    {"name": "C语言+电路+STM32+串口", "weeks": 8},
+    {"name": "通信+WiFi+Linux+项目",  "weeks": 8},
+    {"name": "产品选型+需求分析+面试", "weeks": 8},
+]
 PLAN_PERIODS = {
-    "english": {"months": 18, "label": "18个月", "nodes": ["阶段0：基础重建","阶段1：旅行场景","阶段2：工作沟通","阶段3：雅思输入","阶段4：雅思输出","阶段5：冲刺B2"]},
-    "fae":     {"months": 6,  "label": "6个月",  "nodes": ["C语言+电路+STM32+串口","通信+WiFi+Linux+项目","产品选型+需求分析+面试"]},
+    "english": {"months": 22, "label": "22个月", "stages": EN_STAGES},
+    "fae":     {"months": 6,  "label": "6个月",  "stages": FAE_STAGES},
 }
 
 def _month_add(d, months):
     """日期 + N 个月（近似：按 30 天/月，避免复杂闰月计算）"""
     return d + timedelta(days=30 * months)
 
+def _en_stage_of(cur_week):
+    """English 当前周 → 阶段索引与该阶段起始周"""
+    w = max(1, cur_week or 1)
+    start = 1
+    for i, st in enumerate(EN_STAGES):
+        if w < start + st["weeks"]:
+            return i, start
+        start += st["weeks"]
+    return len(EN_STAGES) - 1, start - EN_STAGES[-1]["weeks"]
+
+def _en_done_days(plan):
+    """English 已完成学习天数：cur_day 表示今天进行到第 N 天（未完成）"""
+    return (max(1, plan["cur_week"] or 1) - 1) * 7 + (max(1, plan["cur_day"] or 1) - 1)
+
+def _fae_done_days(plan):
+    """FAE 已完成学习天数：cur_day 表示本周已学 N 天"""
+    return (max(1, plan["cur_week"] or 1) - 1) * 6 + (plan["cur_day"] or 0)
+
+def _fmt_md(d):
+    return f"{d.month}/{d.day}"
+
+def en_progress(plan):
+    """English 进度：全局百分比（6阶段等分）+ 当前阶段内百分比 + 检查点日期"""
+    done = _en_done_days(plan)
+    stage_idx, stage_start = _en_stage_of(plan["cur_week"])
+    stage = EN_STAGES[stage_idx]
+    stage_days = stage["weeks"] * 7
+    stage_done = done - (stage_start - 1) * 7          # 本阶段已完成天数
+    stage_done = max(0, min(stage_done, stage_days))
+    stage_pct = round(stage_done * 100 / stage_days, 1)
+    # 全局：前面阶段若被提前完成则计满额；当前阶段按实际
+    stage_share = 100.0 / len(EN_STAGES)
+    global_pct = round(stage_share * stage_idx + stage_share * (stage_done / stage_days), 1)
+    # 检查点：阶段0验证 = 今天 + 剩余学习量（自然日）
+    today_d = datetime.now(TZ).date()
+    cp_date = today_d + timedelta(days=stage_days - stage_done)
+    return {
+        "done_days": done, "stage_idx": stage_idx, "stage_name": stage["name"],
+        "stage_start_week": stage_start, "stage_weeks": stage["weeks"],
+        "stage_done": stage_done, "stage_days": stage_days,
+        "stage_pct": stage_pct, "global_pct": global_pct,
+        "next_stage": EN_STAGES[stage_idx + 1]["name"] if stage_idx + 1 < len(EN_STAGES) else None,
+        "cp_name": "阶段0验证" if stage_idx == 0 else EN_STAGES[stage_idx]["name"] + "完成",
+        "cp_date": cp_date.isoformat(), "cp_date_fmt": _fmt_md(cp_date),
+        "remaining_days": max(0, stage_days - stage_done),
+    }
+
+def fae_progress(plan):
+    """FAE 进度：全局百分比（3节点等分）+ 节点内百分比 + 下一检查点日期"""
+    done = _fae_done_days(plan)
+    w = max(1, plan["cur_week"] or 1)
+    node_idx = min((w - 1) // 8, len(FAE_STAGES) - 1)
+    node = FAE_STAGES[node_idx]
+    node_days = node["weeks"] * 6          # FAE 每周 6 个学习日
+    node_done = done - node_idx * node_days
+    node_done = max(0, min(node_done, node_days))
+    node_pct = round(node_done * 100 / node_days, 1)
+    node_share = 100.0 / len(FAE_STAGES)
+    global_pct = round(node_share * node_idx + node_share * (node_done / node_days), 1)
+    # 下一检查点：最近的未过检查点（Week 4/8/9/12/16/20/24），按自然周推算日期
+    today_d = datetime.now(TZ).date()
+    cps = P(plan.get("checkpoints"), []) or []
+    cp_w, cp_name, cp_date, cp_date_fmt = None, None, None, None
+    for cp in cps:
+        cw = cp.get("w")
+        if isinstance(cw, int) and cw >= w:
+            cp_w, cp_name = cw, cp.get("name", f"Week {cw}")
+            # 剩余自然日：还需完成的学习日按每周6学+1休折算
+            remain_days = (cw - w) * 7 + (7 - (plan["cur_day"] or 0))
+            cp_date = today_d + timedelta(days=remain_days)
+            cp_date_fmt = _fmt_md(cp_date)
+            break
+    return {
+        "done_days": done, "stage_idx": node_idx, "stage_name": node["name"],
+        "stage_start_week": node_idx * 8 + 1, "stage_weeks": node["weeks"],
+        "stage_done": node_done, "stage_days": node_days,
+        "stage_pct": node_pct, "global_pct": global_pct,
+        "next_stage": FAE_STAGES[node_idx + 1]["name"] if node_idx + 1 < len(FAE_STAGES) else None,
+        "cp_name": f"Week {cp_w}：{cp_name}" if cp_w else None,
+        "cp_date": cp_date.isoformat() if cp_date else None,
+        "cp_date_fmt": cp_date_fmt,
+        "remaining_days": max(0, (node_days - node_done) // 6 * 7 + ((node_days - node_done) % 6)),
+    }
+
 def plan_period(plan):
-    """返回计划的起止日期与剩余信息"""
+    """计划的起止日期与周期信息（进度百分比由 *_progress 单独计算）"""
     sid = plan.get("id")
     meta = PLAN_PERIODS.get(sid)
-    # 起点：优先用数据库记录的 start_date，否则用今天
     sd = None
     if plan.get("start_date"):
         try: sd = date.fromisoformat(str(plan["start_date"])[:10])
         except Exception: sd = None
     if sd is None:
-        sd = datetime.now(TZ).date()
+        # 未设置起点（如暂停的 FAE）：不计算周期与剩余天数
+        return {"start": None, "end": None, "total_days": None, "remaining": None,
+                "period_label": meta["label"] if meta else None,
+                "stage_names": [s["name"] for s in meta["stages"]] if meta else []}
     today_d = datetime.now(TZ).date()
     if meta:
         ed = _month_add(sd, meta["months"])
         total_days = (ed - sd).days
-        # 当前已完成的天数：按 start_date 到今天的自然日（近似进度）
-        elapsed = max(0, (today_d - sd).days)
         remaining = max(0, (ed - today_d).days)
-        pct = round(elapsed * 100 / total_days) if total_days else 0
         return {"start": sd.isoformat(), "end": ed.isoformat(),
-                "total_days": total_days, "elapsed": elapsed, "remaining": remaining,
-                "pct": min(100, pct), "period_label": meta["label"], "nodes": meta["nodes"]}
+                "total_days": total_days, "remaining": remaining,
+                "period_label": meta["label"],
+                "stage_names": [s["name"] for s in meta["stages"]]}
     return {"start": sd.isoformat(), "end": None, "total_days": None,
-            "elapsed": 0, "remaining": None, "pct": None, "period_label": None, "nodes": []}
+            "remaining": None, "period_label": None, "stage_names": []}
+
+def plan_progress(plan):
+    """统一入口：按计划类型返回进度信息"""
+    if plan.get("id") == "english":
+        return en_progress(plan)
+    if plan.get("id") == "fae":
+        return fae_progress(plan)
+    return None
+
+def display_cp(plan):
+    """显示用检查点：名称 + 预计具体日期（每天动态重算）"""
+    prog = plan_progress(plan)
+    if prog and prog.get("cp_name") and prog.get("cp_date_fmt"):
+        return f"{prog['cp_name']} · 预计 {prog['cp_date_fmt']}"
+    return plan.get("next_cp") or "无"
+
+def _en_week_topic(p, week):
+    """当前周主题：优先取阶段细则（stage_details）对应行；阶段0 回退 route"""
+    prog = en_progress(p)
+    det = P(p.get("stage_details"), {}) or {}
+    det_text = det.get(str(prog.get("stage_idx")))
+    if det_text:
+        lines = [l.strip() for l in str(det_text).splitlines() if l.strip()]
+        li = week - (prog.get("stage_start_week") or 1)
+        if 0 <= li < len(lines):
+            return lines[li]
+    topics = P(p.get("route"), [])
+    if topics and week <= len(topics):
+        return topics[week-1]
+    return None
+
+def _next_task_id(td):
+    """当天任务 ID：取已存在最大序号 +1（删除旧任务后也不会撞主键）"""
+    mx = 0
+    for r in q("SELECT id FROM tasks WHERE id LIKE ?", (f"t_{td.replace('-','')}_%",)):
+        try: mx = max(mx, int(r["id"].rsplit("_", 1)[1]))
+        except Exception: pass
+    return f"t_{td.replace('-','')}_{mx+1:03d}"
 
 # ==================== 今日任务生成（08:00 进度驱动）====================
 def gen_today(force=False):
     td = today()
-    if not force and q1("SELECT COUNT(*) AS n FROM tasks WHERE task_date=? AND type='long_term'", (td,))["n"] > 0:
+    # 今天已存在的长期任务（任何状态）→ 对应计划不再生成新任务，防止重复/覆盖用户推迟
+    existing_plans = {t["plan_id"] for t in q("SELECT plan_id FROM tasks WHERE task_date=? AND type='long_term'", (td,))}
+    if not force and existing_plans:
         return {"created": 0, "skipped": True}
 
-    # 跨天未完成 → postponed
-    y = (datetime.now(TZ).date() - timedelta(days=1)).isoformat()
-    for t in q("SELECT id FROM tasks WHERE task_date<? AND type='long_term' AND status IN ('pending','in_progress')", (y,)):
-        x("UPDATE tasks SET status='postponed' WHERE id=?", (t["id"],))
+    # 跨天未完成（昨天及更早仍 pending/in_progress）→ postponed，记 +1 欠账
+    # postponed_at 记为原任务日期（非今天）→ 跨天延期不可撤销；手动推迟才记今天→可反悔
+    for t in q("SELECT id,plan_id,task_date FROM tasks WHERE task_date<? AND type='long_term' AND status IN ('pending','in_progress')", (td,)):
+        x("UPDATE tasks SET status='postponed', postponed_at=? WHERE id=?", (t["task_date"], t["id"]))
+        if t["plan_id"] in ("english", "fae"):
+            pl = q1("SELECT paused FROM plans WHERE id=?", (t["plan_id"],))
+            if pl and not pl.get("paused"):
+                x("UPDATE plans SET postpone_days=COALESCE(postpone_days,0)+1 WHERE id=?", (t["plan_id"],))
 
     d = datetime.now(TZ).date()
     created = 0
     def add(title, pid, dur, notes=None, pri="normal"):
         nonlocal created
-        seq = len(q("SELECT id FROM tasks WHERE id LIKE ?", (f"t_{td.replace('-','')}_%",))) + 1
-        tid = f"t_{td.replace('-','')}_{seq:03d}"
+        tid = _next_task_id(td)
         x("INSERT INTO tasks(id,title,type,plan_id,task_date,status,priority,duration,notes,created_at) VALUES(?,?,'long_term',?,?,?,?,?,?,?)",
           (tid, title, pid, td, "pending", pri, dur, notes, now()))
         created += 1
 
     plans = {p["id"]: p for p in q("SELECT * FROM plans")}
     for pid, p in plans.items():
+        if p.get("paused"):
+            continue   # 未启动计划不生成任务、不推送、不记账
+        if pid in existing_plans:
+            continue   # 该计划今天已有任务，不再生成（推迟/完成/进行中都不覆盖）
         if pid == "english":
             # 一个任务 = 一整天三段（1h输入 / 1h内化 / 1h输出）
             pending = P(p["pending"], [])
-            notes = (f"当前位置：阶段0 · 主题周{p['cur_week']} · Day {p['cur_day']}（{p['cur_topic']}）\n"
+            prog = en_progress(p)
+            stage_name = prog["stage_name"] if prog else "阶段0"
+            topic = _en_week_topic(p, p["cur_week"] or 1) or p["cur_topic"]
+            notes = (f"当前位置：{stage_name} · 主题周{p['cur_week']} · Day {p['cur_day']}（{topic or '主题待定'}）\n"
                      f"今日三段：{' / '.join(pending[:3])}\n"
                      f"结构：1h输入(语法+20词+对话) / 1h内化(10句关于自己) / 1h输出(改写+录音)\n"
-                     f"复习：2/4/7天节奏\n检查点：{p['next_cp'] or '无'}")
-            add(f"English · Day {p['cur_day']}（{p['cur_topic']}）", pid, p["normal"], notes)
+                     f"复习：2/4/7天节奏\n检查点：{display_cp(p)}")
+            add(f"English · Day {p['cur_day']}（{topic or '主题待定'}）", pid, p["normal"], notes)
         elif pid == "fae":
             pending = P(p["pending"], [])
             focus = pending[0] if pending else p["cur_unit"]
@@ -305,11 +467,12 @@ def gen_today(force=False):
                 w = cp.get("w")
                 if isinstance(w, int) and w >= (p["cur_week"] or 1):
                     dist = w - (p["cur_week"] or 1)
+                    cp_txt = display_cp(p)
                     if dist <= 2:
                         pri = "high"
-                        note += f"\n⚠️ 检查点临近：Week {w} {cp['name']}（还差 {dist} 周），今日优先保证达标"
+                        note += f"\n⚠️ 检查点临近：{cp_txt}（还差 {dist} 周），今日优先保证达标"
                     else:
-                        note += f"\n检查点：Week {w} {cp['name']}（还差 {dist} 周）"
+                        note += f"\n检查点：{cp_txt}（还差 {dist} 周）"
                     break
             add(f"FAE · {focus}", pid, p["normal"], note, pri)
         elif pid == "exercise":
@@ -334,11 +497,11 @@ def advance(pid):
         # 一天 = 输入+内化+输出 三段合一，完成当天任务即进入下一天
         day = (p["cur_day"] or 0) + 1
         week = p["cur_week"] or 1
-        topics = P(p["route"], [])
+        total_weeks = sum(s["weeks"] for s in EN_STAGES)
         if day > 7:
             day, week = 1, week + 1
-            if week > len(topics): week = len(topics)
-        topic = topics[week-1] if topics and week <= len(topics) else p["cur_topic"]
+            if week > total_weeks: week = total_weeks
+        topic = _en_week_topic(p, week) or p["cur_topic"]
         pending = [f"Day {day}：输入", f"Day {day}：内化", f"Day {day}：输出"]
         x("UPDATE plans SET cur_week=?,cur_day=?,cur_topic=?,cur_unit=?,pending=?,updated_at=? WHERE id=?",
           (week, day, topic, f"Day {day}", J(pending), now(), pid))
@@ -418,8 +581,10 @@ def weekly_review():
     temp_undone = len([t for t in temp if t["status"] in ("pending", "in_progress")])
     temp_postponed = len([t for t in temp if t["status"] == "postponed"])
 
-    # 进度信息
+    # 进度信息（阶段模型：全局% / 阶段内% / 检查点日期均动态计算）
     eng = plans.get("english", {}); fae = plans.get("fae", {})
+    eng_prog = plan_progress(eng) or {}
+    fae_prog = plan_progress(fae) or {}
     eng_total = eng.get("cur_day") or 0
     fae_week = fae.get("cur_week"); fae_day = fae.get("cur_day") or 0
 
@@ -431,8 +596,8 @@ def weekly_review():
         notes.append(f"🟡 英语本周有 {es['done_min']} 天以最低剂量完成，已保住连续性，但尽量回归正常目标。")
     else:
         notes.append("🟢 英语本周执行稳定。")
-    if fae_week is not None and fae.get("next_cp"):
-        notes.append(f"📌 FAE 当前 Week {fae_week}，下一检查点：{fae.get('next_cp')}。")
+    if fae_week is not None:
+        notes.append(f"📌 FAE 当前 Week {fae_week}（{fae_prog.get('stage_name') or ''}），下一检查点：{display_cp(fae)}。")
     if fs["undone"] >= 2:
         notes.append(f"⚠️ FAE 本周有 {fs['undone']} 天未完成。")
     if ex["total_done"] == 0:
@@ -447,7 +612,7 @@ def weekly_review():
     # 下周重点（模板）
     next3 = []
     if fae_week is not None:
-        next3.append(f"FAE Week {fae_week}（检查点：{fae.get('next_cp') or '无'}）")
+        next3.append(f"FAE Week {fae_week}（检查点：{display_cp(fae)}）")
     if es["undone"] > 0:
         next3.append("English 补回上周缺漏")
     else:
@@ -469,8 +634,8 @@ def weekly_review():
     md_lines.append(f"- **自媒体视频** {light(cs['total_done'], cs['planned'])}：应做 {cs['planned']} 天，完成 {cs['done_normal']}，未完成 {cs['undone']}")
     md_lines.append(f"- **临时任务**：完成 {temp_done} / 未完成 {temp_undone} / 延期 {temp_postponed}\n")
     md_lines.append("## 🧭 长期计划进度")
-    md_lines.append(f"- English：Day {eng_total or 0}（主题周 {eng.get('cur_week') or '—'}）· 下一检查点 {eng.get('next_cp') or '无'}")
-    md_lines.append(f"- FAE：Week {fae_week or '—'} / 已学 {fae_day} 天 · 下一检查点 {fae.get('next_cp') or '无'}\n")
+    md_lines.append(f"- **English**：{eng_prog.get('stage_name') or '—'} · 全局进度 **{eng_prog.get('global_pct', 0)}%**（当前阶段 {eng_prog.get('stage_pct', 0)}%）· 下一检查点 {display_cp(eng)}")
+    md_lines.append(f"- **FAE**：Week {fae_week or '—'} · {fae_prog.get('stage_name') or '—'} · 全局进度 **{fae_prog.get('global_pct', 0)}%**（当前节点 {fae_prog.get('stage_pct', 0)}%）· 已学 {fae_prog.get('done_days', 0)} 天 · 下一检查点 {display_cp(fae)}\n")
     md_lines.append("## ⭐ 本周分析（规则模板）")
     for n in notes:
         md_lines.append(f"- {n}\n")
@@ -493,8 +658,8 @@ def weekly_review():
     h.append(f"<p>{light_html(light(cs['total_done'], cs['planned']))} <b>自媒体视频</b>：应做 {cs['planned']} 天 · 完成 {cs['done_normal']} · 未完成 {cs['undone']}</p>")
     h.append(f"<p>📌 <b>临时任务</b>：完成 {temp_done} / 未完成 {temp_undone} / 延期 {temp_postponed}</p>")
     h.append("<h4>🧭 长期计划进度</h4>")
-    h.append(f"<p>🇬🇧 English：Day {eng_total or 0}（主题周 {eng.get('cur_week') or '—'}）· 下一检查点 {eng.get('next_cp') or '无'}</p>")
-    h.append(f"<p>💻 FAE：Week {fae_week or '—'} · 已学 {fae_day} 天 · 下一检查点 {fae.get('next_cp') or '无'}</p>")
+    h.append(f"<p>🇬🇧 English：{eng_prog.get('stage_name') or '—'} · 全局 <b>{eng_prog.get('global_pct', 0)}%</b>（阶段内 {eng_prog.get('stage_pct', 0)}%）· 检查点 {display_cp(eng)}</p>")
+    h.append(f"<p>💻 FAE：{fae_prog.get('stage_name') or '—'} · 全局 <b>{fae_prog.get('global_pct', 0)}%</b>（节点内 {fae_prog.get('stage_pct', 0)}%）· 检查点 {display_cp(fae)}</p>")
     h.append("<h4>⭐ 本周分析（规则模板）</h4>")
     h.append("<ul>" + "".join(f"<li>{n}</li>" for n in notes) + "</ul>")
     h.append("<h4>🔥 下周最重要的 3 件事</h4>")
@@ -504,10 +669,9 @@ def weekly_review():
 
     x("INSERT INTO reviews(week_start,content_md,content_html,created_at) VALUES(?,?,?,?)",
       (wk_start, content_md, content_html, now()))
-    # 总进度（按周期天数） + 本周完成数
-    eng_p = plan_period(eng); fae_p = plan_period(fae)
-    eng_pct = eng_p.get("pct") if eng_p.get("pct") is not None else 0
-    fae_pct = fae_p.get("pct") if fae_p.get("pct") is not None else 0
+    # 总进度（阶段模型全局%）+ 本周完成数
+    eng_pct = eng_prog.get("global_pct", 0)
+    fae_pct = fae_prog.get("global_pct", 0)
     week_done_total = es["total_done"] + fs["total_done"] + ex["total_done"] + cs["total_done"] + temp_done
     week_plan_total = es["planned"] + fs["planned"] + ex["planned"] + cs["planned"] + len(temp)
     week_pct = round(week_done_total * 100 / week_plan_total) if week_plan_total else 0
@@ -566,6 +730,7 @@ def overview_page():
 def api_today():
     td = today()
     tasks = q("SELECT * FROM tasks WHERE task_date=? AND status!='postponed' ORDER BY CASE type WHEN 'long_term' THEN 0 ELSE 1 END, priority DESC, created_at", (td,))
+    postponed = q("SELECT * FROM tasks WHERE status='postponed' ORDER BY task_date DESC, created_at", ())
     done = [t for t in tasks if t["status"] == "completed"]
     active = [t for t in tasks if t["status"] in ("pending", "in_progress")]
     total = len(done) + len(active)
@@ -573,11 +738,12 @@ def api_today():
     for p in q("SELECT * FROM plans ORDER BY CASE id WHEN 'english' THEN 1 WHEN 'fae' THEN 2 WHEN 'exercise' THEN 3 ELSE 4 END"):
         plans.append({"id":p["id"],"name":p["name"],"goal":p["goal"],"normal":p["normal"],
                        "cur_week":p["cur_week"],"cur_day":p["cur_day"],"cur_topic":p["cur_topic"],
-                       "cur_unit":p["cur_unit"],"next_cp":p["next_cp"],
-                       "period": plan_period(p),
+                       "cur_unit":p["cur_unit"],"next_cp": display_cp(p),
+                       "period": plan_period(p), "progress": plan_progress(p),
+                       "paused": p.get("paused") or 0, "postpone_days": p.get("postpone_days") or 0,
                        "pending":P(p["pending"],[])[:3]})
     nu = next((t for t in tasks if t["status"] == "pending"), None)
-    return {"date":td,"tasks":tasks,
+    return {"date":td,"tasks":tasks,"postponed":postponed,
             "progress":{"done":len(done),"total":total,"pct":round(len(done)*100/total) if total else 0},
             "next_up":nu,"plans":plans}
 
@@ -640,8 +806,17 @@ async def set_status(tid: str, req: Request):
     if not t: raise HTTPException(404, "任务不存在")
     level = body.get("level") or ("normal" if status == "completed" else None)
     ct = now() if status == "completed" else None
-    x("UPDATE tasks SET status=?,level=?,completed_at=?,notes=COALESCE(?,notes) WHERE id=?",
-      (status, level, ct, body.get("note"), tid))
+    td = today()
+    x("UPDATE tasks SET status=?,level=?,completed_at=?,postponed_at=?,notes=COALESCE(?,notes) WHERE id=?",
+      (status, level, ct, (td if status == "postponed" else None), body.get("note"), tid))
+    # 推迟记账（仅未暂停的 English/FAE）：手动推迟 +1；当天推迟反悔（重新入队）-1
+    if t["plan_id"] in ("english", "fae") and t["type"] == "long_term":
+        pl = q1("SELECT paused FROM plans WHERE id=?", (t["plan_id"],))
+        if pl and not pl.get("paused"):
+            if status == "postponed":
+                x("UPDATE plans SET postpone_days=COALESCE(postpone_days,0)+1 WHERE id=?", (t["plan_id"],))
+            elif status == "pending" and t["status"] == "postponed" and (t.get("postponed_at") or "")[:10] == td:
+                x("UPDATE plans SET postpone_days=CASE WHEN COALESCE(postpone_days,0)>0 THEN postpone_days-1 ELSE 0 END WHERE id=?", (t["plan_id"],))
     # 完成长期任务 → 推进当前位置（每条任务只推进一次，撤销重做不重复计）
     advanced = False
     if status == "completed" and t["type"] == "long_term" and t["plan_id"] and not t.get("advanced"):
@@ -670,7 +845,155 @@ def api_plans():
     plans = q("SELECT * FROM plans ORDER BY CASE id WHEN 'english' THEN 1 WHEN 'fae' THEN 2 WHEN 'exercise' THEN 3 ELSE 4 END")
     for p in plans:
         p["period"] = plan_period(p)
+        p["progress"] = plan_progress(p)
+        p["next_cp"] = display_cp(p)
+        # 阶段细则（每行一周主题）供前端渲染周节点
+        det = P(p["stage_details"], {}) if p.get("stage_details") else {}
+        p["stage_details"] = det if isinstance(det, dict) else {}
     return {"plans": plans}
+
+# ---- 阶段细则保存（每行 = 一周主题）----
+@app.post("/api/plans/{pid}/stage_details")
+async def save_stage_details(pid: str, req: Request):
+    body = await req.json()
+    stage = body.get("stage")
+    text = (body.get("text") or "").strip()
+    p = q1("SELECT * FROM plans WHERE id=?", (pid,))
+    if not p: raise HTTPException(404, "计划不存在")
+    if pid not in ("english", "fae"): raise HTTPException(400, "该计划不支持阶段细则")
+    stages = EN_STAGES if pid == "english" else FAE_STAGES
+    if not isinstance(stage, int) or stage < 0 or stage >= len(stages):
+        raise HTTPException(400, f"阶段编号应为 0~{len(stages)-1}")
+    det = P(p["stage_details"], {}) or {}
+    if text:
+        det[str(stage)] = text
+    else:
+        det.pop(str(stage), None)
+    x("UPDATE plans SET stage_details=?,updated_at=? WHERE id=?", (J(det), now(), pid))
+    return {"ok": True, "stage_details": det}
+
+# ---- 提前完成：跳到下一阶段，剩余周作废 ----
+def _regen_today_for(pid):
+    """跳阶后：删除该计划今天未完成的长期任务，按新位置重新生成今天的任务"""
+    td = today()
+    for t in q("SELECT id FROM tasks WHERE task_date=? AND plan_id=? AND type='long_term' AND status IN ('pending','in_progress')",
+               (td, pid)):
+        x("DELETE FROM tasks WHERE id=?", (t["id"],))
+    p = q1("SELECT * FROM plans WHERE id=?", (pid,))
+    if not p: return 0
+    def add(title, dur, notes=None, pri="normal"):
+        tid = _next_task_id(td)
+        x("INSERT INTO tasks(id,title,type,plan_id,task_date,status,priority,duration,notes,created_at) VALUES(?,?,'long_term',?,?,?,?,?,?,?)",
+          (tid, title, pid, td, "pending", pri, dur, notes, now()))
+    if pid == "english":
+        pending = P(p["pending"], [])
+        prog = en_progress(p)
+        topic = _en_week_topic(p, p["cur_week"] or 1) or p["cur_topic"]
+        notes = (f"当前位置：{prog['stage_name']} · 主题周{p['cur_week']} · Day {p['cur_day']}（{topic or '主题待定'}）\n"
+                 f"今日三段：{' / '.join(pending[:3])}\n"
+                 f"结构：1h输入(语法+20词+对话) / 1h内化(10句关于自己) / 1h输出(改写+录音)\n"
+                 f"复习：2/4/7天节奏\n检查点：{display_cp(p)}")
+        add(f"English · Day {p['cur_day']}（{topic or '主题待定'}）", p["normal"], notes)
+    elif pid == "fae":
+        pending = P(p["pending"], [])
+        focus = pending[0] if pending else p["cur_unit"]
+        cps = P(p["checkpoints"], [])
+        pri, note = "normal", f"当前位置：Week {p['cur_week']}（{p['cur_unit']}）· 本周已学 {p['cur_day'] or 0}/6 天"
+        for cp in cps:
+            w = cp.get("w")
+            if isinstance(w, int) and w >= (p["cur_week"] or 1):
+                dist = w - (p["cur_week"] or 1)
+                if dist <= 2:
+                    pri = "high"
+                    note += f"\n⚠️ 检查点临近：{display_cp(p)}（还差 {dist} 周），今日优先保证达标"
+                else:
+                    note += f"\n检查点：{display_cp(p)}（还差 {dist} 周）"
+                break
+        add(f"FAE · {focus}", p["normal"], note, pri)
+    return 1
+
+@app.post("/api/plans/{pid}/skip_stage")
+async def skip_stage(pid: str):
+    """提前完成：当前阶段剩余周作废（不显示欠账），直接进入下一阶段"""
+    p = q1("SELECT * FROM plans WHERE id=?", (pid,))
+    if not p: raise HTTPException(404, "计划不存在")
+    if pid not in ("english", "fae"): raise HTTPException(400, "该计划不支持阶段推进")
+    stages = EN_STAGES if pid == "english" else FAE_STAGES
+    if pid == "english":
+        idx, start = _en_stage_of(p["cur_week"])
+        if idx + 1 >= len(stages):
+            raise HTTPException(400, "已是最后一个阶段，无法再提前")
+        prog = en_progress(p)
+        new_week = start + stages[idx]["weeks"]          # 下一阶段第 1 周
+        topics = P(p["route"], [])
+        # 新阶段首周主题：优先取阶段细则第一行（阶段0 12周外回退 route）
+        det = P(p["stage_details"], {}) or {}
+        ndet = det.get(str(idx + 1))
+        new_topic = next((l.strip() for l in str(ndet).splitlines() if l.strip()), None) if ndet else None
+        if new_topic is None:
+            new_topic = topics[new_week-1] if topics and new_week <= len(topics) else None
+        skipped_days = max(0, prog["stage_days"] - prog["stage_done"])
+        x("UPDATE plans SET cur_week=?, cur_day=1, cur_topic=?, "
+          "pending=?, updated_at=? WHERE id=?",
+          (new_week, new_topic, J(["Day 1：输入", "Day 2：内化", "Day 3：输出"]), now(), pid))
+    else:
+        w = max(1, p["cur_week"] or 1)
+        idx = min((w - 1) // 8, len(stages) - 1)
+        if idx + 1 >= len(stages):
+            raise HTTPException(400, "已是最后一个节点，无法再提前")
+        prog = fae_progress(p)
+        new_week = (idx + 1) * 8 + 1                     # 下一节点第 1 周
+        # pending 队列跳到新节点：只保留新周及以后的项，不足则按 route 补齐
+        pending = P(p["pending"], [])
+        kept = []
+        for t in pending:
+            m = re.match(r"Week (\d+)", t or "")
+            if m and int(m.group(1)) >= new_week:
+                kept.append(t)
+        route = {r["w"]: r["u"] for r in P(p["route"], [])}
+        wk = new_week
+        while len(kept) < 8 and wk in route:
+            kept.append(f"Week {wk}：{route[wk]}")
+            wk += 1
+        nxt = kept[0] if kept else None
+        new_unit = (nxt.split("：", 1)[1] if nxt and "：" in nxt else nxt) or f"Week {new_week}"
+        skipped_days = max(0, prog["stage_days"] - prog["stage_done"])
+        x("UPDATE plans SET cur_week=?, cur_day=0, cur_unit=?, pending=?, updated_at=? WHERE id=?",
+          (new_week, new_unit, J(kept), now(), pid))
+    next_name = stages[idx + 1]["name"]
+    _regen_today_for(pid)   # 今天未完成旧任务删除，按新阶段重新生成
+    new_prog = plan_progress(q1("SELECT * FROM plans WHERE id=?", (pid,))) or {}
+    push("🚀 提前进入下一阶段",
+         f"{p['name']}已推进：{next_name}（作废 {skipped_days} 天未完成量，不计欠账）· 全局进度 {new_prog.get('global_pct', 0)}%",
+         click=f"{CONFIG['web_url']}/overview")
+    return {"ok": True, "pid": pid, "old_stage": stages[idx]["name"], "new_stage": next_name,
+            "skipped_days": skipped_days, "new_week": new_week,
+            "progress": new_prog}
+
+# ---- 清零推迟欠账（手动平账）----
+@app.post("/api/plans/{pid}/clear_postpone")
+async def clear_postpone(pid: str):
+    if pid not in ("english", "fae"):
+        raise HTTPException(400, "该计划不支持")
+    x("UPDATE plans SET postpone_days=0, updated_at=? WHERE id=?", (now(), pid))
+    return {"ok": True, "postpone_days": 0}
+
+# ---- 启动 FAE（从点击当天起算 6 个月周期）----
+@app.post("/api/plans/fae/start")
+async def start_fae():
+    p = q1("SELECT * FROM plans WHERE id='fae'")
+    if not p: raise HTTPException(404, "计划不存在")
+    if not p.get("paused"):
+        return {"ok": True, "already_started": True}
+    td = today()
+    x("UPDATE plans SET paused=0, start_date=?, postpone_days=0, updated_at=? WHERE id='fae'",
+      (td, now()))
+    created = _regen_today_for("fae")
+    push("🚀 FAE 已启动",
+         "从今天开始按 6 个月周期计算进度，去总览看看你的里程碑地图",
+         click=f"{CONFIG['web_url']}/overview")
+    return {"ok": True, "created": created,
+            "progress": plan_progress(q1("SELECT * FROM plans WHERE id='fae'")) or {}}
 
 # ---- 总览沙盘 ----
 @app.get("/api/overview")
@@ -702,64 +1025,62 @@ def api_overview():
         heat_weeks.append(week)
         cur += timedelta(days=7)
 
-    # 2) 里程碑地图
+    # 2) 里程碑地图：当前阶段 + 百分比 + 下一阶段（填了细则 → 显示周节点）
     milestones = []
     for p in plans:
         pid = p["id"]
-        meta = PLAN_PERIODS.get(pid)
-        if not meta:
+        if pid not in ("english", "fae"):
             continue
-        nodes = meta["nodes"]
-        # 大节点默认等分，附加子节点信息
-        node_items = []
-        if pid == "english":
-            # 英语 12 主题周作为小节点，归入 6 大阶段
-            topics = P(p["route"], [])
-            stage_names = ["阶段0","阶段1","阶段2","阶段3","阶段4","阶段5"]
-            # 每个阶段 2 个主题周
-            for si, sname in enumerate(stage_names):
-                sub = topics[si*2:(si+1)*2]
-                cur_w = p["cur_week"] or 1
-                # 阶段 i 覆盖主题周 2i+1 ~ 2i+2
-                stage_start = si*2 + 1
-                stage_end = si*2 + 2
-                passed = cur_w > stage_end
-                current = stage_start <= cur_w <= stage_end
-                node_items.append({"name": sname, "full": meta["nodes"][si], "sub": sub,
-                                   "done": passed, "current": current})
-        elif pid == "fae":
-            # FAE 3 大节点（第1-2月/第3-4月/第5-6月），每个含若干周小节点
-            sub_names = [["C语言基础","数组函数","指针struct","电路+原理图","STM32+GPIO","GPIO中断","USART串口","串口深化"],
-                         ["ESP8266调试","STM32+ESP8266","网络+Linux","HTTP请求","项目整合","项目优化","项目验收"],
-                         ["3款产品","竞品分析","需求案例","选型案例","Linux补完","技术英语","面试准备","投递"]]
-            cw = p["cur_week"] or 1
-            for si, sname in enumerate(nodes):
-                subs = sub_names[si] if si < len(sub_names) else []
-                passed = cw > (si+1)*8
-                current = (not passed and cw > si*8)
-                node_items.append({"name": sname, "full": sname, "sub": subs,
-                                   "done": passed, "current": current})
-        else:
-            continue
-        pct = plan_period(p).get("pct") or 0
-        milestones.append({"id": pid, "name": p["name"], "pct": pct, "nodes": node_items})
+        prog = plan_progress(p) or {}
+        stages = EN_STAGES if pid == "english" else FAE_STAGES
+        det = P(p["stage_details"], {}) or {}
+        # 当前阶段的细则文本（每行一周）→ 周节点；English 阶段0 无细则回退 route 主题
+        detail_text = det.get(str(prog.get("stage_idx"))) or ""
+        lines = [l.strip() for l in str(detail_text).splitlines() if l.strip()]
+        if not lines and pid == "english" and prog.get("stage_idx") == 0:
+            lines = [t for t in (P(p["route"], []) or []) if t]
+        weeks_detail = [{"week": (prog.get("stage_start_week") or 1) + i, "topic": ln}
+                        for i, ln in enumerate(lines)]
+        # 编辑弹层用：每个阶段的细则（English 阶段0 预填 route 主题方便直接改）
+        route_topics = "\n".join(t for t in (P(p["route"], []) or []) if t) if pid == "english" else ""
+        milestones.append({
+            "id": pid, "name": p["name"],
+            "stage_idx": prog.get("stage_idx"),
+            "stage_name": prog.get("stage_name"),
+            "stage_pct": prog.get("stage_pct"),
+            "global_pct": prog.get("global_pct"),
+            "next_stage": prog.get("next_stage"),
+            "cp": display_cp(p),
+            "stage_weeks": prog.get("stage_weeks"),
+            "cur_week": p["cur_week"],
+            "weeks_detail": weeks_detail,           # 填了细则（或阶段0）才有内容
+            # 全部阶段（供「阶段细则」编辑弹层使用）
+            "stages": [{"idx": i, "name": s["name"], "weeks": s["weeks"],
+                        "detail": det.get(str(i)) or (route_topics if i == 0 and pid == "english" else "")}
+                       for i, s in enumerate(stages)],
+        })
 
-    # 3) 数据看板
+    # 3) 数据看板（English/FAE 显示百分比；运动/自媒体只显示累计）
     board = []
     for p in plans:
+        pid = p["id"]
         per = plan_period(p)
-        # 累计完成天数
-        done_days = q1("SELECT COUNT(DISTINCT task_date) AS n FROM tasks WHERE plan_id=? AND type='long_term' AND status='completed'", (p["id"],))["n"] or 0
-        output_count = None
-        if p["id"] == "content":
+        done_days = q1("SELECT COUNT(DISTINCT task_date) AS n FROM tasks WHERE plan_id=? AND type='long_term' AND status='completed'", (pid,))["n"] or 0
+        item = {"id": pid, "name": p["name"], "goal": p["goal"],
+                "done_days": done_days,
+                "remaining": per.get("remaining"), "end": per.get("end"),
+                "period_label": per.get("period_label")}
+        if pid in ("english", "fae"):
+            prog = plan_progress(p) or {}
+            item.update({"stage_name": prog.get("stage_name"),
+                         "global_pct": prog.get("global_pct"),
+                         "stage_pct": prog.get("stage_pct"),
+                         "done_study_days": prog.get("done_days"),
+                         "cp": display_cp(p)})
+        if pid == "content":
             extra = P(p["extra"], {}) or {}
-            output_count = extra.get("output_count") or 0
-        board.append({"id": p["id"], "name": p["name"], "goal": p["goal"],
-                      "cur_week": p["cur_week"], "cur_day": p["cur_day"],
-                      "cur_unit": p["cur_unit"], "done_days": done_days,
-                      "output_count": output_count,
-                      "pct": per.get("pct"), "remaining": per.get("remaining"),
-                      "end": per.get("end"), "period_label": per.get("period_label")})
+            item["output_count"] = extra.get("output_count") or 0
+        board.append(item)
 
     return {"date": td, "heat_weeks": heat_weeks, "day_names": day_names,
             "milestones": milestones, "board": board}
@@ -777,6 +1098,32 @@ def api_review_detail(rid: int):
 @app.post("/api/test/gen_today")
 def api_gen():
     return gen_today(force=True)
+
+@app.post("/api/test/reset")
+def api_reset():
+    """清空数据并按 pgos_seed.json 重建（预览/测试用；正式站请勿随意调用）"""
+    x("DELETE FROM tasks"); x("DELETE FROM reviews"); x("DELETE FROM plans")
+    db().commit()
+    seedf = BASE / "pgos_seed.json"
+    if seedf.exists():
+        data = json.loads(seedf.read_text(encoding="utf-8"))
+        sd = today()
+        for p in data.get("plans", []):
+            if not p.get("paused") and not p.get("start_date"):
+                p["start_date"] = sd
+            cols = ",".join(p.keys()); ph = ",".join("?"*len(p))
+            x(f"INSERT INTO plans({cols}) VALUES({ph})", tuple(p.values()))
+        for t in data.get("tasks", []):
+            cols = ",".join(t.keys()); ph = ",".join("?"*len(t))
+            x(f"INSERT INTO tasks({cols}) VALUES({ph})", tuple(t.values()))
+        for r in data.get("reviews", []):
+            x("INSERT INTO reviews(week_start,content_md,content_html,created_at) VALUES(?,?,?,?)",
+              (r["week_start"], r["content_md"], r["content_html"], r["created_at"]))
+        print(f"[reset] 已从 pgos_seed.json 恢复 {len(data.get('plans',[]))} 计划 / {len(data.get('tasks',[]))} 任务 / {len(data.get('reviews',[]))} 周报", flush=True)
+    else:
+        seed()
+    gen_today()
+    return {"ok": True, "reset": True}
 
 @app.post("/api/test/urge")
 def api_urge():
