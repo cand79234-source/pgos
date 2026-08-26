@@ -3,7 +3,7 @@
 一个文件搞定：数据库 / API / 网页 / 调度 / 推送。
 支持双模式：有 DATABASE_URL 环境变量 → PostgreSQL（云端部署）；否则 SQLite（本地）。
 """
-import sqlite3, json, os, re, threading, random, urllib.request, urllib.parse
+import sqlite3, json, os, re, threading, random, urllib.request, urllib.parse, socket, time
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -12,6 +12,11 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 import apscheduler.schedulers.background as bg
+
+# 全局 socket 超时兜底：Neon 是 serverless 数据库，空闲连接常被静默关闭，
+# 若不设客户端超时，查询会挂到 TCP 重传（几分钟），直接拖爆 Render 网关。
+# 设 20s：任何网络读写最多等 20s，死连接会快速失败而非无限挂起。
+socket.setdefaulttimeout(20)
 
 BASE = Path(__file__).resolve().parent
 DB = BASE / "growth.db"
@@ -32,7 +37,22 @@ _local = threading.local()
 def db():
     c = getattr(_local, "conn", None)
     if c is not None and (not IS_PG or not c.closed):
-        return c
+        if IS_PG:
+            # Neon serverless 会静默断空闲连接；复用前先 ping，失败则扔掉重建。
+            # 30s 内 ping 过就直接复用，避免每个查询都 ping 一次拖累性能。
+            now_ts = time.time()
+            if now_ts - getattr(_local, "last_ping", 0) < 30:
+                return c
+            try:
+                c.execute("SELECT 1")
+                _local.last_ping = now_ts
+                return c
+            except Exception:
+                try: c.close()
+                except Exception: pass
+                _local.conn = None
+        else:
+            return c
     if IS_PG:
         import psycopg2
         dsn = DATABASE_URL
@@ -42,10 +62,11 @@ def db():
         c.autocommit = False
         try:
             c.execute("SET lock_timeout='15s'")
-            c.execute("SET statement_timeout='60s'")
+            c.execute("SET statement_timeout='20s'")  # 与 socket 全局超时对齐
         except Exception:
             pass
         _local.conn = c
+        _local.last_ping = time.time()
     else:
         c = sqlite3.connect(str(DB), timeout=10)
         c.row_factory = sqlite3.Row
@@ -54,10 +75,20 @@ def db():
     return c
 
 def _exec(sql, p=()):
-    """统一执行入口：PG 用 RealDictCursor（fetchall 返回 dict 行）；失败自动回滚防连接报废"""
+    """统一执行入口：PG 用 RealDictCursor（fetchall 返回 dict 行）；失败自动回滚/重建连接"""
     if IS_PG:
-        import psycopg2.extras
+        import psycopg2, psycopg2.extras
         try:
+            cur = db().cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+            cur.execute(sql, p)
+            return cur
+        except psycopg2.OperationalError:
+            # 多半是连接被云端静默断开了：扔掉旧连接，重建后重试一次
+            c = getattr(_local, "conn", None)
+            if c is not None:
+                try: c.close()
+                except Exception: pass
+                _local.conn = None
             cur = db().cursor(cursor_factory=psycopg2.extras.RealDictCursor)
             cur.execute(sql, p)
             return cur
@@ -112,7 +143,7 @@ def random_celebrate():
 # ==================== 推送 ====================
 def push(title, body, click=None):
     """ntfy 推送：JSON publishing（中文标题放 body，无 header 编码问题）"""
-    payload = {"topic": CONFIG["ntfy_topic"], "title": title, "message": body, "tags": ["bell"]}
+    payload = {"topic": CONFIG["ntfy_topic"], "title": title, "message": body, "tags": ["bell"], "priority": 4}
     if click:
         payload["click"] = click
     req = urllib.request.Request("https://ntfy.sh/",
@@ -1159,6 +1190,3 @@ def api_weekly():
 def api_push():
     push("测试", "如果你看到这条，说明 Push 链路正常。", click=CONFIG["web_url"])
     return {"ok": True}
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
