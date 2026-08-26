@@ -28,31 +28,54 @@
 .heat-legend{display:flex;align-items:center;gap:4px;font-size:11px;color:var(--muted);margin-top:8px}
 .heat-legend .cell{width:11px;height:11px;border-radius:3px}
 /* 里程碑 */
-.milestone{margin-bottom:12px}
-.milestone .mh{font-weight:700;font-size:14px;display:flex;justify-content:space-between;align-items:center}
-.milestone .mbar{height:8px;background:#eef2f7;border-radius:99px;overflow:hidden;margin:7px 0}
-.milestone .mbar i{display:block;height:100%;background:linear-gradient(90deg,var(--brand2),var(--brand));border-radius:99px;transition:width .5s}
-.nodes{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
-.node{font-size:11px;padding:4px 9px;border-radius:99px;background:#f1f5f9;color:#64748b;font-weight:600}
-.node.done{background:#dcfce7;color:#15803d;text-decoration:none}
-.node.current{background:var(--brand-bg);color:var(--brand);border:1.5px solid var(--brand);box-shadow:0 0 0 3px rgba(251,191,36,.15)}
-.node .subs{display:block;font-size:10px;color:#94a3b8;font-weight:500;margin-top:1px}
-.node.done .subs{color:#86d28a}
+.milestone{padding:13px 0;border-bottom:1px dashed var(--line)}
+.milestone:last-child{border-bottom:none;padding-bottom:2px}
+.milestone .mh{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:6px}
+.milestone .mname{font-weight:800;font-size:14px;display:flex;align-items:center;gap:6px}
+.milestone .mops{display:flex;gap:6px}
+.milestone .sname{font-size:13px;color:#334155;font-weight:700;margin-bottom:7px}
+.milestone .sname .loc{color:var(--brand);font-weight:800}
+.mbar{height:8px;background:#eef2f7;border-radius:99px;overflow:hidden;margin:6px 0 4px}
+.mbar i{display:block;height:100%;background:linear-gradient(90deg,var(--brand2),var(--brand));border-radius:99px;transition:width .5s}
+.mrow{display:flex;justify-content:space-between;font-size:11.5px;color:var(--muted)}
+.mrow b{color:var(--brand)}
+.mnext{font-size:12px;color:#334155;margin-top:7px;background:var(--brand-bg);border-radius:8px;padding:6px 10px}
+.mnext b{color:var(--brand)}
+.mcp{font-size:11.5px;color:var(--muted);margin-top:6px}
+.nodes{display:flex;flex-wrap:wrap;gap:6px;margin-top:9px}
+.node{font-size:11px;font-weight:700;padding:0 10px;height:22px;display:inline-flex;align-items:center;border-radius:999px;background:#f1f5f9;color:#64748b;white-space:nowrap;line-height:1}
+.node.done{background:#dcfce7;color:#15803d}
+.node.current{background:var(--brand-bg);color:var(--brand);border:1.5px solid var(--brand);box-shadow:0 0 0 3px rgba(20,184,166,.12)}
 /* 看板 */
-.board-row{display:flex;align-items:center;justify-content:space-between;padding:9px 0;border-bottom:1px dashed var(--line)}
+.board-row{display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px dashed var(--line);gap:10px}
 .board-row:last-child{border-bottom:none}
-.board-name{font-weight:700;font-size:13px}
-.board-goal{font-size:11px;color:var(--muted);margin-top:2px}
-.board-meta{text-align:right;font-size:12px;color:#334155}
-.board-meta b{font-size:15px;color:var(--brand)}
-.board-pct{font-size:11px;color:var(--muted);margin-top:2px}
-@media(prefers-color-scheme:dark){.heat-cell{background:#2a3342}.heat-cell.future{background:#232b38}}
+.board-name{font-weight:700;font-size:13.5px}
+.board-stage{font-size:11.5px;color:var(--muted);margin-top:3px}
+.board-meta{text-align:right;font-size:12px;color:#334155;flex-shrink:0}
+.board-meta b{font-size:17px;color:var(--brand)}
+.board-meta .sub{font-size:11px;color:var(--muted);margin-top:2px}
+/* 弹层 */
+.mask{position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:50;display:flex;align-items:center;justify-content:center;padding:18px}
+.dlg{background:#fff;border-radius:16px;padding:20px 18px;max-width:420px;width:100%;box-shadow:0 12px 44px rgba(0,0,0,.35);max-height:82vh;overflow-y:auto}
+.dlg h3{font-size:16px;margin-bottom:8px}
+.dlg p{font-size:13px;color:#475569;line-height:1.7}
+.dlg .stage-tabs{display:flex;flex-wrap:wrap;gap:6px;margin:12px 0}
+.dlg .stage-tabs button{border:1px solid var(--line);background:#f8fafc;font-size:12px;font-weight:700;padding:0 12px;height:26px;display:inline-flex;align-items:center;border-radius:999px;cursor:pointer;color:#475569;line-height:1}
+.dlg .stage-tabs button.on{background:var(--brand);border-color:var(--brand);color:#fff}
+.dlg textarea{width:100%;min-height:150px;border:1.5px solid var(--line);border-radius:9px;padding:10px;font-size:13px;line-height:1.7;font-family:inherit;outline:none;resize:vertical}
+.dlg textarea:focus{border-color:var(--brand2)}
+.dlg .btns{display:flex;gap:8px;margin-top:14px;justify-content:flex-end}
+@media(prefers-color-scheme:dark){
+  .heat-cell{background:#2a3342}.heat-cell.future{background:#232b38}
+  .dlg{background:#1e293b}.dlg p{color:#cbd5e1}.dlg textarea{background:#0f172a;color:#e2e8f0;border-color:#334155}
+  .dlg .stage-tabs button{background:#0f172a;color:#cbd5e1;border-color:#334155}
+}
 </style>
 </head>
 <body>
 <nav class="nav">
   <div class="logo">Personal Growth OS<small>OVERVIEW</small></div>
-  <div class="tabs"><a href="/">Today</a><a href="/overview" class="on">总览</a><a href="/reviews">Reviews</a></div>
+  <div class="tabs"><a href="/overview" class="on">总览</a><a href="/">今日</a><a href="/reviews">复盘</a></div>
 </nav>
 <div class="wrap">
   <div id="dateStr" class="ov-sub" style="margin-top:4px"></div>
@@ -66,7 +89,7 @@
   <!-- 里程碑地图 -->
   <div class="ov-card">
     <div class="ov-title"><span class="ic">🗺️</span>里程碑地图</div>
-    <div class="ov-sub">绿色=已完成 · 黄色=当前位置 · 灰=未开始</div>
+    <div class="ov-sub">当前阶段进度 · 一阶段 = 里程碑的 100%</div>
     <div id="milestones"></div>
   </div>
 
@@ -92,38 +115,52 @@
 <script>
 const $=id=>document.getElementById(id);
 const esc=s=>(s??'').toString().replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+let OV=null;
 
 async function load(){
-  const r=await fetch('/api/overview');const d=await r.json();
+  const r=await fetch('/api/overview');const d=await r.json();OV=d;
   const dd=new Date(d.date+'T00:00:00');
   $('dateStr').textContent=`${dd.getMonth()+1}月${dd.getDate()}日 · 周${'日一二三四五六'[dd.getDay()]} · 执行总览`;
 
-  // 数据看板
+  // 数据看板：English/FAE 显示百分比；运动/自媒体只显示累计
   $('board').innerHTML = d.board.map(b=>{
-    const pct = b.pct!=null ? b.pct+'%' : '—';
-    const rem = b.remaining!=null ? `还剩<b style="color:#fbbf24">${b.remaining}</b>天` : '';
-    let pos = b.cur_unit || '';
-    if(b.cur_week!=null)pos=(b.id==='english'?'主题周':'Week ')+b.cur_week+' '+(b.cur_day!=null?'Day '+b.cur_day:'');
-    // 自媒体视频显示累计条数
-    let subMeta = `累计 ${b.done_days} 天 · ${rem}`;
-    if(b.output_count!=null) subMeta = `已输出 <b style="color:#fbbf24">${b.output_count}</b> 条 · ${rem}`;
+    let right='', stage='';
+    if(b.global_pct!=null){
+      right=`<b>${b.global_pct}%</b><div class="sub">全局 · 阶段内 ${b.stage_pct}%</div>`;
+      stage=`${esc(b.stage_name)} · 检查点 ${esc(b.cp||'—')}`;
+    }else if(b.output_count!=null){
+      right=`<b>${b.output_count}</b><div class="sub">累计输出 · 条</div>`;
+      stage=esc(b.goal||'');
+    }else{
+      right=`<b>${b.done_days}</b><div class="sub">累计打卡 · 天</div>`;
+      stage=esc(b.goal||'');
+    }
     return `<div class="board-row">
-      <div><div class="board-name">${esc(b.name)}</div><div class="board-goal">${esc(b.goal||'')}${pos?' · '+esc(pos):''}</div></div>
-      <div class="board-meta"><b>${pct}</b><div class="board-pct">${subMeta}</div></div>
+      <div style="min-width:0"><div class="board-name">${esc(b.name)}</div><div class="board-stage">${stage}</div></div>
+      <div class="board-meta">${right}</div>
     </div>`;
   }).join('')||'<div class="empty">暂无数据</div>';
 
-  // 里程碑地图
+  // 里程碑：当前阶段 + 百分比 + 下一阶段（+ 周节点）
   $('milestones').innerHTML = d.milestones.map(m=>{
-    const nodes = m.nodes.map(n=>{
-      const cls = n.done?'done':(n.current?'current':'');
-      const subs = n.sub && n.sub.length ? `<span class="subs">${n.sub.map(esc).join(' · ')}</span>`:'';
-      return `<span class="node ${cls}">${n.done?'✅ ':''}${n.current?'📍':''}${esc(n.full||n.name)}${subs}</span>`;
+    const nodes = (m.weeks_detail||[]).map(w=>{
+      const cls = w.week < m.cur_week ? 'done' : (w.week===m.cur_week?'current':'');
+      return `<span class="node ${cls}">${cls==='done'?'✓ ':''}${cls==='current'?'📍 ':''}W${w.week} ${esc(w.topic)}</span>`;
     }).join('');
     return `<div class="milestone">
-      <div class="mh"><span>${esc(m.name)}</span><span style="color:var(--brand);font-size:13px">${m.pct}%</span></div>
-      <div class="mbar"><i style="width:${m.pct}%"></i></div>
-      <div class="nodes">${nodes}</div>
+      <div class="mh">
+        <div class="mname">${esc(m.name)}</div>
+        <div class="mops">
+          <button class="btn" onclick="editDetail('${m.id}')">📝 细则</button>
+          <button class="btn" onclick="askSkip('${m.id}')" ${m.next_stage?'':'disabled style="opacity:.4"'}>⚡ 提前完成</button>
+        </div>
+      </div>
+      <div class="sname"><span class="loc">📍 当前：</span>${esc(m.stage_name)}</div>
+      <div class="mbar"><i style="width:${Math.min(100,m.stage_pct)}%"></i></div>
+      <div class="mrow"><span>本阶段 <b>${m.stage_pct}%</b></span><span>全局 <b>${m.global_pct}%</b></span></div>
+      <div class="mcp">🎯 检查点：${esc(m.cp||'—')}</div>
+      ${m.next_stage?`<div class="mnext">下一阶段：<b>${esc(m.next_stage)}</b></div>`:''}
+      ${nodes?`<div class="nodes">${nodes}</div>`:''}
     </div>`;
   }).join('')||'<div class="empty">暂无里程碑</div>';
 
@@ -137,6 +174,81 @@ async function load(){
     }).join('')+'</div>'
   ).join('');
 }
+
+/* ===== ⚡ 提前完成（跳到下一阶段）===== */
+function askSkip(pid){
+  const m=OV.milestones.find(x=>x.id===pid);if(!m||!m.next_stage)return;
+  mask(`<div class="dlg">
+    <h3>⚡ 提前进入下一阶段</h3>
+    <p><b>${esc(m.name)}</b><br>
+    当前：<b>${esc(m.stage_name)}</b>（本阶段 ${m.stage_pct}%）<br>
+    即将进入：<b style="color:var(--brand)">${esc(m.next_stage)}</b></p>
+    <p style="color:#b45309;background:#fffbeb;border-radius:8px;padding:8px 10px">⚠️ 本阶段未完成的周将直接作废（不补、不显示欠账），进度按「已完成」计。</p>
+    <div class="btns"><button class="btn" onclick="closeMask()">再想想</button>
+    <button class="btn g" onclick="doSkip('${pid}')">确认提前</button></div>
+  </div>`);
+}
+async function doSkip(pid){
+  const r=await fetch(`/api/plans/${pid}/skip_stage`,{method:'POST'});
+  const d=await r.json();
+  closeMask();
+  if(d.ok){toast(`✓ 已进入 ${d.new_stage}（作废 ${d.skipped_days} 天）`);load()}
+  else toast(d.detail||'操作失败');
+}
+
+/* ===== 📝 阶段细则编辑 ===== */
+let editing={pid:null,idx:null};
+function editDetail(pid){
+  const m=OV.milestones.find(x=>x.id===pid);if(!m)return;
+  const cur=parseInt(m.stage_idx)||0;
+  mask(stageDlgHtml(m,cur));
+  editDetailPick(pid,cur);
+}
+function stageDlgHtml(m,idx){
+  const tabs=m.stages.map(s=>
+    `<button class="${s.idx===idx?'on':''}" onclick="editDetailPick('${m.id}',${s.idx})">${esc(s.name.split('：')[0])}</button>`).join('');
+  const st=m.stages[idx]||{};
+  return `<div class="dlg">
+    <h3>📝 阶段细则 · ${esc(m.name)}</h3>
+    <p>给每个阶段录入每周主题（一行一周），保存后总览页会显示周节点；今天的任务标题也会带上当前周主题。</p>
+    <div class="stage-tabs">${tabs}</div>
+    <div id="dlgStageName" style="font-size:13px;font-weight:700;margin-bottom:6px"></div>
+    <textarea id="dlgDetail" placeholder="每行写一周主题，例如：&#10;第1周 机场值机&#10;第2周 酒店入住&#10;第3周 问路点餐"></textarea>
+    <div class="btns"><button class="btn" onclick="closeMask()">取消</button>
+    <button class="btn p" onclick="saveDetail()">保存</button></div>
+  </div>`;
+}
+function editDetailPick(pid,idx){
+  const m=OV.milestones.find(x=>x.id===pid);if(!m)return;
+  editing={pid,idx};
+  document.querySelectorAll('.stage-tabs button').forEach(b=>b.classList.remove('on'));
+  const st=m.stages[idx]||{};
+  document.querySelector(`.stage-tabs button:nth-child(${idx+1})`)?.classList.add('on');
+  $('dlgStageName').innerHTML=`${esc(st.name)} · 共 ${st.weeks} 周`;
+  $('dlgDetail').value=st.detail||'';
+}
+async function saveDetail(){
+  const {pid,idx}=editing;
+  const text=$('dlgDetail').value.trim();
+  const r=await fetch(`/api/plans/${pid}/stage_details`,{method:'POST',
+    headers:{'Content-Type':'application/json'},body:JSON.stringify({stage:idx,text})});
+  const d=await r.json();
+  if(d.ok){closeMask();toast('✓ 阶段细则已保存');load()}
+  else toast(d.detail||'保存失败');
+}
+
+/* ===== 通用弹层 / 提示 ===== */
+function mask(html){
+  closeMask();
+  const m=document.createElement('div');m.className='mask';m.id='theMask';
+  m.innerHTML=html;m.onclick=e=>{if(e.target===m)closeMask()};
+  document.body.appendChild(m);
+}
+function closeMask(){const m=$('theMask');if(m)m.remove()}
+function toast(m){let t=document.getElementById('ovToast');
+  if(!t){t=document.createElement('div');t.id='ovToast';t.className='toast';document.body.appendChild(t)}
+  t.textContent=m;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2500)}
+
 load();
 </script>
 </body>
