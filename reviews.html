@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Reviews · Personal Growth OS</title>
+<link rel="stylesheet" href="/static/style.css">
+<link rel="manifest" href="/static/manifest.webmanifest">
+<meta name="theme-color" content="#111827">
+<link rel="apple-touch-icon" href="/static/icon-192.png">
+
+</head>
+<body>
+<nav class="nav">
+  <div class="logo">Personal Growth OS<small>WEEKLY REVIEW</small></div>
+  <div class="tabs"><a href="/">Today</a><a href="/overview">总览</a><a href="/reviews" class="on">Reviews</a></div>
+</nav>
+<div class="app">
+  <div class="sec-title" style="margin-top:14px">每周复盘</div>
+  <div id="list"><div class="empty">加载中...</div></div>
+  <div id="detail" style="display:none"></div>
+  <footer>每周日 21:30 自动生成 · 基于过去 7 天真实执行记录 · 纯本地统计不吃积分</footer>
+</div>
+<script>
+const $=id=>document.getElementById(id);
+const esc=s=>(s??'').toString().replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+let currentMd='';
+const toast=m=>{let t=$('toast');if(!t){t=document.createElement('div');t.id='toast';t.className='toast';document.body.appendChild(t)}t.textContent=m;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2000)};
+async function load(){
+  const el=$('list');
+  try{
+    const r=await fetch('/api/reviews');const d=await r.json();
+    if(!d.reviews.length){el.innerHTML='<div class="empty">暂无周报（每周日自动生成）</div>';return}
+    el.innerHTML=d.reviews.map(r=>`<div class="news-item" onclick="show(${r.id})"><h3>${esc(r.week_start)} 周</h3></div>`).join('');
+  }catch(e){el.innerHTML='<div class="empty">加载失败，刷新重试</div>'}
+}
+async function show(id){
+  const r=await fetch(`/api/reviews/${id}`);const rv=await r.json();
+  currentMd=rv.content_md||'';
+  $('list').style.display='none';const d=$('detail');d.style.display='block';
+  d.innerHTML=`<div class="news-detail"><h2>${rv.week_start} 周报</h2>`
+    +`<div style="margin:10px 0"><button class="btn g" onclick="copyMd()">📋 复制（Markdown，可贴给 AI 深度分析）</button></div>`
+    +`<div class="content">${rv.content_html||'<pre>'+(esc(rv.content_md)||'无内容')+'</pre>'}</div>`
+    +`<button class="btn" style="margin-top:14px" onclick="back()">← 返回</button></div>`;
+}
+async function copyMd(){
+  if(!currentMd){toast('暂无内容');return}
+  try{
+    if(navigator.clipboard&&window.isSecureContext){await navigator.clipboard.writeText(currentMd)}
+    else{const ta=document.createElement('textarea');ta.value=currentMd;document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove()}
+    toast('✓ 已复制，可粘贴给 AI 跑深度分析');
+  }catch(e){toast('复制失败，请长按选择复制')}
+}
+function back(){$('list').style.display='';$('detail').style.display='none'}
+load();
+</script>
+</body>
+</html>
