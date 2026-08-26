@@ -6,9 +6,9 @@ services:
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
     envVars:
-      - key: DATABASE_URL        # 第2步从 Neon 复制的连接串，部署时粘贴
+      - key: DATABASE_URL
         sync: false
       - key: NTFY_TOPIC
         value: topic_workbuddy
-      - key: WEB_URL             # 部署后拿到 https://xxx.onrender.com 再回来填
+      - key: WEB_URL
         sync: false
