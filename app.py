@@ -134,13 +134,23 @@ def init_db():
             if s2 and not s2.upper().startswith("PRAGMA"):
                 clean.append(s2)
         for s in clean:
-            try: _exec(s)
+            try:
+                _exec(s)
+                db().commit()   # 每条建表立即提交：PG 的 DDL 是事务性的，
+                                # 单条失败回滚时不会连带撤销之前已建的表
             except Exception as e:
+                try: db().rollback()
+                except Exception: pass
                 if "already exists" not in str(e): raise
-        try: _exec("ALTER TABLE tasks ADD COLUMN advanced INTEGER DEFAULT 0")
-        except Exception: pass
-        try: _exec("ALTER TABLE plans ADD COLUMN start_date TEXT")
-        except Exception: pass
+        # 兼容迁移（老库补列）：失败单独回滚，不影响已建的表
+        for alt in ("ALTER TABLE tasks ADD COLUMN advanced INTEGER DEFAULT 0",
+                    "ALTER TABLE plans ADD COLUMN start_date TEXT"):
+            try:
+                _exec(alt)
+                db().commit()
+            except Exception:
+                try: db().rollback()
+                except Exception: pass
         db().commit()
     else:
         db().executescript(schema)
