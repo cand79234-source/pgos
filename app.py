@@ -1159,3 +1159,6 @@ def api_weekly():
 def api_push():
     push("测试", "如果你看到这条，说明 Push 链路正常。", click=CONFIG["web_url"])
     return {"ok": True}
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
