@@ -94,7 +94,9 @@ async function load(){
       const postTag=pd>0?` <b style="color:#dc2626">+${pd}</b>`:'';
       periodHtml=`<div class="wr"><b>周期</b><span>${fmtISO(per.start)} ~ ${fmtISO(per.end)}</span></div>`
         +`<div class="wr"><b>进度</b><span>还剩 <b>${baseRemain+pd}</b> 天${postTag} · 预计 ${expStr} 完成</span></div>`;
-      if(pd>0)periodHtml+=`<div class="wr"><b></b><span><button class="btn" onclick="clearPostpone('${p.id}')">清零欠账</button></span></div>`;
+      // 有欠账或推迟区有该计划任务 → 显示清零（清零 = 归零 + 清空推迟区 + 重生成今日任务）
+      const ppost=(d.postponed||[]).filter(t=>t.plan_id===p.id).length;
+      if(pd>0||ppost>0)periodHtml+=`<div class="wr"><b></b><span><button class="btn" onclick="clearPostpone('${p.id}')">清零欠账</button></span></div>`;
       if(p.id==='fae')periodHtml+=`<div class="wr"><b></b><span><button class="btn w" onclick="pauseFAE()">⏸ 暂停 FAE（回到未启动）</button></span></div>`;
     }else if(p.paused){
       periodHtml=`<div class="wr"><b>状态</b><span>未启动 · 启动后按周期计算进度</span></div>`
@@ -172,10 +174,12 @@ function card(t){
   if(t.status==='pending')ops=`<button class="btn p" onclick="op('${t.id}','in_progress')">开始做</button><button class="btn g" onclick="op('${t.id}','completed')">完成</button><button class="btn w" onclick="op('${t.id}','postponed')">推迟</button>`;
   else if(t.status==='in_progress')ops=`<button class="btn g" onclick="op('${t.id}','completed')">完成</button><button class="btn w" onclick="op('${t.id}','postponed')">推迟</button>`;
   else if(t.status==='postponed'){
-    // 当天推迟可反悔（重新入队 -1）；跨天延期已成事实，不可撤销
-    ops = (t.postponed_at && t.postponed_at.slice(0,10)===window.__today)
-      ? `<button class="btn p" onclick="op('${t.id}','pending')">重新入队</button>`
-      : `<span class="chip" style="color:#b45309">跨天延期·不可撤销</span>`;
+    // 已推迟任务三个出口：重新入队（当天可反悔）/ 补完成 / 放弃
+    const undo = (t.postponed_at && t.postponed_at.slice(0,10)===window.__today)
+      ? `<button class="btn p" onclick="op('${t.id}','pending')">重新入队</button>` : '';
+    ops = undo
+      + `<button class="btn g" onclick="op('${t.id}','completed')">补完成</button>`
+      + `<button class="btn w" onclick="abandon('${t.id}')">放弃</button>`;
   }
   if(t.status==='completed')ops=`<button class="btn" onclick="op('${t.id}','pending')">撤销完成</button>`;
   const borderCss = doneCss ? 'done' : (t.status==='postponed'?'late':'');
@@ -188,6 +192,13 @@ async function op(id,status){
   if(d.advanced)toast('✓ 已完成 · 当前位置已前移（明天从这里继续）');
   else toast('✓ 已更新');
   load();
+}
+
+async function abandon(id){
+  if(!confirm('确定放弃这条任务？放弃后从已推迟区移除（欠账与位置不受影响）。'))return;
+  const r=await fetch(`/api/tasks/${id}/abandon`,{method:'POST'});
+  const d=await r.json();
+  if(d.ok){toast('🗑 已放弃并移除');load();}else toast('操作失败');
 }
 
 async function addTask(){

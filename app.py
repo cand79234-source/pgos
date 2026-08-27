@@ -412,7 +412,14 @@ def plan_period(plan):
                 "stage_names": [s["name"] for s in meta["stages"]] if meta else []}
     today_d = datetime.now(TZ).date()
     if meta:
-        ed = _month_add(sd, meta["months"])
+        if sid == "fae":
+            # 冻结式周期：预计完成 = 启动日 + 剩余周数×7（暂停重启后按剩余内容另算，不重吃完整6个月）
+            total_weeks = sum(s["weeks"] for s in FAE_STAGES)
+            cur = plan.get("cur_week") or 1
+            remain_weeks = max(1, total_weeks - cur + 1)
+            ed = sd + timedelta(days=remain_weeks * 7)
+        else:
+            ed = _month_add(sd, meta["months"])
         total_days = (ed - sd).days
         remaining = max(0, (ed - today_d).days)
         return {"start": sd.isoformat(), "end": ed.isoformat(),
@@ -861,7 +868,7 @@ async def set_status(tid: str, req: Request):
     td = today()
     x("UPDATE tasks SET status=?,level=?,completed_at=?,postponed_at=?,notes=COALESCE(?,notes) WHERE id=?",
       (status, level, ct, (td if status == "postponed" else None), body.get("note"), tid))
-    # 推迟记账（仅未暂停的 English/FAE）：手动推迟 +1；当天推迟反悔（重新入队）-1
+    # 推迟记账（仅未暂停的 English/FAE）：手动推迟 +1；当天推迟反悔（重新入队）-1；补完成 -1
     if t["plan_id"] in ("english", "fae") and t["type"] == "long_term":
         pl = q1("SELECT paused FROM plans WHERE id=?", (t["plan_id"],))
         if pl and not pl.get("paused"):
@@ -872,12 +879,17 @@ async def set_status(tid: str, req: Request):
                     advance(t["plan_id"])
             elif status == "pending" and t["status"] == "postponed" and (t.get("postponed_at") or "")[:10] == td:
                 x("UPDATE plans SET postpone_days=CASE WHEN COALESCE(postpone_days,0)>0 THEN postpone_days-1 ELSE 0 END WHERE id=?", (t["plan_id"],))
+            elif status == "completed" and t["status"] == "postponed":
+                # 补完成：欠账视为补上了，-1
+                x("UPDATE plans SET postpone_days=CASE WHEN COALESCE(postpone_days,0)>0 THEN postpone_days-1 ELSE 0 END WHERE id=?", (t["plan_id"],))
     # 完成长期任务 → 推进当前位置（每条任务只推进一次，撤销重做不重复计）
+    # 注意：推迟区任务的「补完成」不推进位置（位置已走到后面）
     advanced = False
     if status == "completed" and t["type"] == "long_term" and t["plan_id"] and not t.get("advanced"):
-        advance(t["plan_id"])
+        if t["status"] != "postponed":
+            advance(t["plan_id"])
+            advanced = True
         x("UPDATE tasks SET advanced=1 WHERE id=?", (tid,))
-        advanced = True
         # 自媒体视频：完成一条 → output_count +1
         if t["plan_id"] == "content":
             cp = q1("SELECT * FROM plans WHERE id='content'")
@@ -1025,13 +1037,33 @@ async def skip_stage(pid: str):
             "skipped_days": skipped_days, "new_week": new_week,
             "progress": new_prog}
 
-# ---- 清零推迟欠账（手动平账）----
+# ---- 放弃已推迟任务（从推迟区移除，不影响位置与欠账计数）----
+@app.post("/api/tasks/{tid}/abandon")
+async def abandon_task(tid: str):
+    t = q1("SELECT * FROM tasks WHERE id=?", (tid,))
+    if not t: raise HTTPException(404, "任务不存在")
+    if t["status"] != "postponed":
+        raise HTTPException(400, "只能放弃已推迟的任务")
+    x("DELETE FROM tasks WHERE id=?", (tid,))
+    return {"ok": True}
+
+# ---- 清零推迟欠账（手动平账：归零 + 清空已推迟 + 按当前位置重生成今日任务）----
 @app.post("/api/plans/{pid}/clear_postpone")
 async def clear_postpone(pid: str):
     if pid not in ("english", "fae"):
         raise HTTPException(400, "该计划不支持")
     x("UPDATE plans SET postpone_days=0, updated_at=? WHERE id=?", (now(), pid))
-    return {"ok": True, "postpone_days": 0}
+    # 清空该计划所有已推迟任务（推迟区不再堆积）
+    x("DELETE FROM tasks WHERE plan_id=? AND status='postponed'", (pid,))
+    # 若今天的任务也被推迟清掉了，按当前位置重新生成今日任务
+    td = today()
+    n_today = q1("SELECT COUNT(*) AS n FROM tasks WHERE task_date=? AND plan_id=? AND type='long_term'", (td, pid))["n"]
+    regen = 0
+    if n_today == 0:
+        p = q1("SELECT paused FROM plans WHERE id=?", (pid,))
+        if p and not p.get("paused"):
+            regen = _regen_today_for(pid)
+    return {"ok": True, "postpone_days": 0, "regen_created": regen}
 
 # ---- 启动 FAE（从点击当天起算 6 个月周期）----
 @app.post("/api/plans/fae/start")
@@ -1050,19 +1082,19 @@ async def start_fae():
     return {"ok": True, "created": created,
             "progress": plan_progress(q1("SELECT * FROM plans WHERE id='fae'")) or {}}
 
-# ---- 暂停 FAE（回到未启动状态）----
+# ---- 暂停 FAE（冻结进度：保留 Week/Day，回到未启动显示；重启后按剩余周数另算周期）----
 @app.post("/api/plans/fae/pause")
 async def pause_fae():
     p = q1("SELECT * FROM plans WHERE id='fae'")
     if not p: raise HTTPException(404, "计划不存在")
     if p.get("paused"):
         return {"ok": True, "already_paused": True}
-    x("UPDATE plans SET paused=1, start_date=NULL, cur_week=1, cur_day=0, cur_unit=NULL, postpone_days=0, updated_at=? WHERE id='fae'",
-      (now(),))
-    # 清除未完成的 FAE 任务，避免暂停后还堆在今日/已推迟
+    # 冻结进度：保留 cur_week/cur_day/cur_unit/postpone_days，只置暂停位并清起点
+    x("UPDATE plans SET paused=1, start_date=NULL, updated_at=? WHERE id='fae'", (now(),))
+    # 清除今天起的未完成 FAE 任务（已完成的历史记录保留）
     td = today()
     x("DELETE FROM tasks WHERE plan_id='fae' AND task_date>=? AND status IN ('pending','in_progress','postponed')", (td,))
-    return {"ok": True}
+    return {"ok": True, "saved_week": p.get("cur_week"), "saved_day": p.get("cur_day")}
 
 # ---- 总览沙盘 ----
 @app.get("/api/overview")
