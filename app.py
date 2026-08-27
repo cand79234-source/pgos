@@ -1047,6 +1047,35 @@ async def abandon_task(tid: str):
     x("DELETE FROM tasks WHERE id=?", (tid,))
     return {"ok": True}
 
+# ---- 位置修正（数据修复用：手动微调 cur_week/cur_day，重生成今日任务）----
+@app.post("/api/plans/{pid}/set_position")
+async def set_position(pid: str, req: Request):
+    if pid not in ("english", "fae"):
+        raise HTTPException(400, "该计划不支持")
+    body = await req.json()
+    p = q1("SELECT * FROM plans WHERE id=?", (pid,))
+    if not p: raise HTTPException(404, "计划不存在")
+    week = body.get("cur_week")
+    day = body.get("cur_day")
+    if week is None and day is None:
+        raise HTTPException(400, "至少提供 cur_week 或 cur_day")
+    week = int(week) if week is not None else p["cur_week"]
+    day = int(day) if day is not None else p["cur_day"]
+    if week < 1 or day < 1:
+        raise HTTPException(400, "位置必须为正数")
+    x("UPDATE plans SET cur_week=?, cur_day=?, updated_at=? WHERE id=?", (week, day, now(), pid))
+    # 位置修正后的今日任务处理：
+    # - 今天还有未完成任务 → 删掉（标题与位置不符），今天没收工才按新位置重生成
+    # - 今天已收工（有 completed）→ 不新增任务，明天自然按新位置生成，避免多出任务变新欠账
+    regen = 0
+    if not p.get("paused"):
+        td = today()
+        n_done = q1("SELECT COUNT(*) AS n FROM tasks WHERE task_date=? AND plan_id=? AND type='long_term' AND status='completed'", (td, pid))["n"]
+        x("DELETE FROM tasks WHERE task_date=? AND plan_id=? AND type='long_term' AND status IN ('pending','in_progress')", (td, pid))
+        if n_done == 0:
+            regen = _regen_today_for(pid)
+    return {"ok": True, "cur_week": week, "cur_day": day, "regen_created": regen}
+
 # ---- 清零推迟欠账（手动平账：归零 + 清空已推迟 + 按当前位置重生成今日任务）----
 @app.post("/api/plans/{pid}/clear_postpone")
 async def clear_postpone(pid: str):
