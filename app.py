@@ -116,6 +116,13 @@ def x(sql, p=()):
 
 def now(): return datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S")
 def today(): return datetime.now(TZ).date().isoformat()
+
+def bdate(dt=None):
+    """业务日：03:00 之前算前一天（凌晨赶工归前一天），用于进度推导与热力图归属"""
+    dt = dt or datetime.now(TZ)
+    if dt.hour < 3:
+        return (dt.date() - timedelta(days=1)).isoformat()
+    return dt.date().isoformat()
 def J(o): return json.dumps(o, ensure_ascii=False)
 def P(s, d=None):
     if not s: return d
@@ -225,7 +232,9 @@ def init_db():
         data = json.loads(seedf.read_text(encoding="utf-8"))
         sd = today()
         for p in data.get("plans", []):
-            if not p.get("paused") and not p.get("start_date"):
+            if p.get("id") == "english":
+                p["start_date"] = (datetime.now(TZ).date() - timedelta(days=3)).isoformat()  # 初始锚点：今天=Day4
+            elif not p.get("paused") and not p.get("start_date"):
                 p["start_date"] = sd
             cols = ",".join(p.keys()); ph = ",".join("?"*len(p))
             x(f"INSERT INTO plans({cols}) VALUES({ph})", tuple(p.values()))
@@ -337,13 +346,31 @@ def _fae_done_days(plan):
 def _fmt_md(d):
     return f"{d.month}/{d.day}"
 
+def en_derived(plan):
+    """English 当前 Day/Week：由 start_date 日历推导（业务日 03:00 切分）；无起点则回退原字段"""
+    sd = plan.get("start_date")
+    try:
+        sd = date.fromisoformat(str(sd)[:10]) if sd else None
+    except Exception:
+        sd = None
+    if not sd:
+        return None
+    td = datetime.now(TZ)
+    biz = td.date() if td.hour >= 3 else (td.date() - timedelta(days=1))  # 业务日：03:00 前算前一天
+    day = max(1, (biz - sd).days + 1)   # 业务日推导：今天进行到第几天
+    return {"week": (day - 1) // 7 + 1, "day": day}
+
 def en_progress(plan):
-    """English 进度：全局百分比（6阶段等分）+ 当前阶段内百分比 + 检查点日期"""
-    done = _en_done_days(plan)
-    stage_idx, stage_start = _en_stage_of(plan["cur_week"])
+    """English 进度：由 start_date 日历推导当前 Day/Week，再换算阶段百分比与检查点"""
+    dv = en_derived(plan)
+    if dv is None:
+        cur_week, cur_day = max(1, plan.get("cur_week") or 1), max(1, plan.get("cur_day") or 1)
+    else:
+        cur_week, cur_day = dv["week"], dv["day"]
+    stage_idx, stage_start = _en_stage_of(cur_week)
     stage = EN_STAGES[stage_idx]
     stage_days = stage["weeks"] * 7
-    stage_done = done - (stage_start - 1) * 7          # 本阶段已完成天数
+    stage_done = (cur_week - stage_start) * 7 + (cur_day - 1)   # 本阶段已完成天数
     stage_done = max(0, min(stage_done, stage_days))
     stage_pct = round(stage_done * 100 / stage_days, 1)
     # 全局：前面阶段若被提前完成则计满额；当前阶段按实际
@@ -353,7 +380,7 @@ def en_progress(plan):
     today_d = datetime.now(TZ).date()
     cp_date = today_d + timedelta(days=stage_days - stage_done)
     return {
-        "done_days": done, "stage_idx": stage_idx, "stage_name": stage["name"],
+        "done_days": (cur_week - 1) * 7 + (cur_day - 1), "stage_idx": stage_idx, "stage_name": stage["name"],
         "stage_start_week": stage_start, "stage_weeks": stage["weeks"],
         "stage_done": stage_done, "stage_days": stage_days,
         "stage_pct": stage_pct, "global_pct": global_pct,
@@ -504,15 +531,17 @@ def gen_today(force=False):
             continue   # 该计划今天已有任务，不再生成（推迟/完成/进行中都不覆盖）
         if pid == "english":
             # 一个任务 = 一整天三段（1h输入 / 1h内化 / 1h输出）
+            dv = en_derived(p)
+            ew = dv["week"] if dv else (p["cur_week"] or 1)
+            ed = dv["day"] if dv else (p["cur_day"] or 1)
+            topic = _en_week_topic(p, ew) or p["cur_topic"]
             pending = P(p["pending"], [])
-            prog = en_progress(p)
-            stage_name = prog["stage_name"] if prog else "阶段0"
-            topic = _en_week_topic(p, p["cur_week"] or 1) or p["cur_topic"]
-            notes = (f"当前位置：{stage_name} · 主题周{p['cur_week']} · Day {p['cur_day']}（{topic or '主题待定'}）\n"
+            stage_name = EN_STAGES[_en_stage_of(ew)[0]]["name"]
+            notes = (f"当前位置：{stage_name} · 主题周{ew} · Day {ed}（{topic or '主题待定'}）\n"
                      f"今日三段：{' / '.join(pending[:3])}\n"
                      f"结构：1h输入(语法+20词+对话) / 1h内化(10句关于自己) / 1h输出(改写+录音)\n"
                      f"复习：2/4/7天节奏\n检查点：{display_cp(p)}")
-            add(f"English · Day {p['cur_day']}（{topic or '主题待定'}）", pid, p["normal"], notes)
+            add(f"English · Day {ed}（{topic or '主题待定'}）", pid, p["normal"], notes)
         elif pid == "fae":
             pending = P(p["pending"], [])
             focus = pending[0] if pending else p["cur_unit"]
@@ -803,6 +832,11 @@ def api_today():
     total = len(done) + len(active)
     plans = []
     for p in q("SELECT * FROM plans ORDER BY CASE id WHEN 'english' THEN 1 WHEN 'fae' THEN 2 WHEN 'exercise' THEN 3 ELSE 4 END"):
+        # English 进度由 start_date 日历推导，覆盖存储的旧 cur_week/cur_day，保证前端「当前位置」正确
+        if p["id"] == "english":
+            dv = en_derived(p)
+            if dv:
+                p["cur_week"], p["cur_day"] = dv["week"], dv["day"]
         plans.append({"id":p["id"],"name":p["name"],"goal":p["goal"],"normal":p["normal"],
                        "cur_week":p["cur_week"],"cur_day":p["cur_day"],"cur_topic":p["cur_topic"],
                        "cur_unit":p["cur_unit"],"next_cp": display_cp(p),
@@ -882,26 +916,19 @@ async def set_status(tid: str, req: Request):
         if pl and not pl.get("paused"):
             if status == "postponed":
                 x("UPDATE plans SET postpone_days=COALESCE(postpone_days,0)+1 WHERE id=?", (t["plan_id"],))
-                # English 推迟时当前位置也前进，避免「推迟区 Day3 + 今日任务还是 Day3」重复
-                if t["plan_id"] == "english":
-                    advance(t["plan_id"])
             elif status == "pending" and t["status"] == "postponed" and (t.get("postponed_at") or "")[:10] == td:
                 x("UPDATE plans SET postpone_days=CASE WHEN COALESCE(postpone_days,0)>0 THEN postpone_days-1 ELSE 0 END WHERE id=?", (t["plan_id"],))
             elif status == "completed" and t["status"] == "postponed":
                 # 补完成：欠账视为补上了，-1
                 x("UPDATE plans SET postpone_days=CASE WHEN COALESCE(postpone_days,0)>0 THEN postpone_days-1 ELSE 0 END WHERE id=?", (t["plan_id"],))
-    # 完成长期任务 → 推进当前位置
-    # 去重交给 advance() 内的 last_advance_date（同一天只推进一次），
-    # 覆盖"完成→撤销→再完成"与"推迟区补完成"等场景，位置不与真实进度脱节
+    # 完成长期任务：仅 FAE 维持「完成即推进」模型；English 进度由日历推导，完成不推进位置
     advanced = False
-    if status == "completed" and t["type"] == "long_term" and t["plan_id"]:
-        # 推迟区任务的「补完成」不推进位置（位置已走到后面）
-        if t["status"] != "postponed":
-            before_w = q1("SELECT cur_week,cur_day FROM plans WHERE id=?", (t["plan_id"],))
-            advance(t["plan_id"])
-            after = q1("SELECT cur_week,cur_day FROM plans WHERE id=?", (t["plan_id"],))
-            advanced = (before_w and after and
-                        (before_w["cur_week"], before_w["cur_day"]) != (after["cur_week"], after["cur_day"]))
+    if status == "completed" and t["type"] == "long_term" and t["plan_id"] == "fae":
+        before_w = q1("SELECT cur_week,cur_day FROM plans WHERE id=?", (t["plan_id"],))
+        advance(t["plan_id"])
+        after = q1("SELECT cur_week,cur_day FROM plans WHERE id=?", (t["plan_id"],))
+        advanced = (before_w and after and
+                    (before_w["cur_week"], before_w["cur_day"]) != (after["cur_week"], after["cur_day"]))
         # 自媒体视频：完成一条 → output_count +1
         if t["plan_id"] == "content":
             cp = q1("SELECT * FROM plans WHERE id='content'")
@@ -923,6 +950,11 @@ async def set_status(tid: str, req: Request):
 def api_plans():
     plans = q("SELECT * FROM plans ORDER BY CASE id WHEN 'english' THEN 1 WHEN 'fae' THEN 2 WHEN 'exercise' THEN 3 ELSE 4 END")
     for p in plans:
+        # English 进度由 start_date 日历推导，覆盖存储的旧 cur_week/cur_day
+        if p["id"] == "english":
+            dv = en_derived(p)
+            if dv:
+                p["cur_week"], p["cur_day"] = dv["week"], dv["day"]
         p["period"] = plan_period(p)
         p["progress"] = plan_progress(p)
         p["next_cp"] = display_cp(p)
@@ -1059,7 +1091,9 @@ async def abandon_task(tid: str):
     x("DELETE FROM tasks WHERE id=?", (tid,))
     return {"ok": True}
 
-# ---- 位置修正（用户可手动拨位置：微调 cur_week/cur_day，重生成今日任务）----
+# ---- 位置修正 ----
+# English：手动平移 start_date 锚点（从新位置继续，不伪造历史、不写完成记录）
+# FAE：维持 cur_week/cur_day 微调（FAE 为「完成即推进」模型，不在本次改造范围）
 @app.post("/api/plans/{pid}/set_position")
 async def set_position(pid: str, req: Request):
     if pid not in ("english", "fae"):
@@ -1067,35 +1101,50 @@ async def set_position(pid: str, req: Request):
     body = await req.json()
     p = q1("SELECT * FROM plans WHERE id=?", (pid,))
     if not p: raise HTTPException(404, "计划不存在")
-    week = body.get("cur_week")
-    day = body.get("cur_day")
-    if week is None and day is None:
-        raise HTTPException(400, "至少提供 cur_week 或 cur_day")
     def _to_int(v):
         # 容错 "Day 5" / "5" / "week3" 等输入；返回 None 表示无法解析
         s = re.sub(r"[^0-9]", "", str(v))
         return int(s) if s else None
-    week = _to_int(week) if week is not None else None
-    day = _to_int(day) if day is not None else None
-    # 未提供/无法解析的维度，沿用当前值
+    if pid == "english":
+        # 手动调整 = 平移 start_date 锚点，使今天对应目标 Day（进度由日历推导，无需改 cur_day）
+        day = _to_int(body.get("cur_day") or body.get("day"))
+        if day is None or day < 1:
+            raise HTTPException(400, "请提供有效的 Day（正整数）")
+        new_start = (date.fromisoformat(bdate()) - timedelta(days=day - 1)).isoformat()
+        x("UPDATE plans SET start_date=?, updated_at=? WHERE id=?", (new_start, now(), pid))
+        td = today()
+        if not q1("SELECT COUNT(*) AS n FROM tasks WHERE task_date=? AND plan_id=? AND  type='long_term'", (td, pid))["n"]:
+            _regen_today_for(pid)
+        return {"ok": True, "start_date": new_start, "day": day}
+    # FAE 维持原 cur_week/cur_day 微调逻辑
+    week = _to_int(body.get("cur_week"))
+    day = _to_int(body.get("cur_day"))
+    if week is None and day is None:
+        raise HTTPException(400, "至少提供 cur_week 或 cur_day")
     week = week if week is not None else (p["cur_week"] or 1)
     day = day if day is not None else (p["cur_day"] or 1)
     if week < 1 or day < 1:
         raise HTTPException(400, "位置必须为正数")
     td = today()
-    # 手动拨到即算"已推进到该点"，重置去重日期，后续当天完成不再额外 +1
     x("UPDATE plans SET cur_week=?, cur_day=?, last_advance_date=?, updated_at=? WHERE id=?",
       (week, day, td, now(), pid))
-    # 位置修正后的今日任务处理：
-    # - 今天还有未完成任务 → 删掉（标题与位置不符），今天没收工才按新位置重生成
-    # - 今天已收工（有 completed）→ 不新增任务，明天自然按新位置生成，避免多出任务变新欠账
-    regen = 0
     if not p.get("paused"):
         n_done = q1("SELECT COUNT(*) AS n FROM tasks WHERE task_date=? AND plan_id=? AND type='long_term' AND status='completed'", (td, pid))["n"]
         x("DELETE FROM tasks WHERE task_date=? AND plan_id=? AND type='long_term' AND status IN ('pending','in_progress')", (td, pid))
         if n_done == 0:
-            regen = _regen_today_for(pid)
-    return {"ok": True, "cur_week": week, "cur_day": day, "regen_created": regen}
+            _regen_today_for(pid)
+    return {"ok": True, "cur_week": week, "cur_day": day}
+
+# ---- English 锚点校准：把「今天是 Day N」写死为 start_date（默认 N=4），随日历自然增长 ----
+@app.post("/api/plans/english/reanchor")
+async def reanchor_english(req: Request = None):
+    body = (await req.json() if req else {}) or {}
+    days = int(body.get("day", 4) or 4)
+    days = max(1, days)
+    new_start = (date.fromisoformat(bdate()) - timedelta(days=days - 1)).isoformat()
+    x("UPDATE plans SET start_date=?, updated_at=? WHERE id='english'", (new_start, now()))
+    dv = en_derived(q1("SELECT * FROM plans WHERE id='english'"))
+    return {"ok": True, "start_date": new_start, "today_day": dv["day"] if dv else None}
 
 # ---- 清零推迟欠账（手动平账：归零 + 清空已推迟 + 按当前位置重生成今日任务）----
 @app.post("/api/plans/{pid}/clear_postpone")
@@ -1159,7 +1208,9 @@ def api_overview():
     rows = q("SELECT completed_at, status, task_date FROM tasks WHERE type='long_term' AND status='completed' AND task_date>=?",
              (start.isoformat(),))
     for r in rows:
-        cd = (r.get("completed_at") or r.get("task_date") or "")[:10]
+        ca = r.get("completed_at")
+        # 按业务日（03:00 切天）归属：凌晨 0~3 点完成算前一天，与进度口径一致
+        cd = bdate(datetime.strptime(ca, "%Y-%m-%d %H:%M:%S")) if ca else (r.get("task_date") or "")[:10]
         if cd:
             heat[cd] = heat.get(cd, 0) + 1
     heat_weeks = []
@@ -1260,7 +1311,9 @@ def api_reset():
         data = json.loads(seedf.read_text(encoding="utf-8"))
         sd = today()
         for p in data.get("plans", []):
-            if not p.get("paused") and not p.get("start_date"):
+            if p.get("id") == "english":
+                p["start_date"] = (datetime.now(TZ).date() - timedelta(days=3)).isoformat()  # 初始锚点：今天=Day4
+            elif not p.get("paused") and not p.get("start_date"):
                 p["start_date"] = sd
             cols = ",".join(p.keys()); ph = ",".join("?"*len(p))
             x(f"INSERT INTO plans({cols}) VALUES({ph})", tuple(p.values()))

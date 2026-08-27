@@ -64,7 +64,10 @@ const esc=s=>(s??'').toString().replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>
 load();
 
 async function load(){
-  const r=await fetch('/api/today');const d=await r.json();
+ try{
+  const r=await fetch('/api/today');
+  if(!r.ok)throw new Error('HTTP '+r.status+' '+r.statusText);
+  const d=await r.json();
   window.__today=d.date;
   $('dateStr').textContent=fmtDate(d.date);
   $('bar').style.width=d.progress.pct+'%';
@@ -120,6 +123,11 @@ async function load(){
   $('postSec').style.display=post.length?'':'none';
   $('postTasks').innerHTML=post.map(t=>card(t)).join('')||'';
   if(d.progress.total>0&&d.progress.done===d.progress.total)celebrate();
+ }catch(e){
+  const el=document.getElementById('where');
+  if(el)el.innerHTML='<div class="wr"><span style="color:#dc2626">⚠️ 数据加载失败，可能服务正在启动或网络抖动，<button class="btn" onclick="load()">点此重试</button></span></div>';
+  console.error('load 失败',e);
+ }
 }
 
 // 日期格式：YYYY/MM/DD
