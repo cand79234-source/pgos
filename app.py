@@ -27,7 +27,7 @@ TZ = ZoneInfo("Asia/Shanghai")
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 IS_PG = bool(DATABASE_URL)
 CONFIG = {
-    "ntfy_topic": os.environ.get("NTFY_TOPIC", "topic_workbuddy"),
+    "ntfy_topic": os.environ.get("NTFY_TOPIC", "workbuddynewjj"),
     "web_url": os.environ.get("WEB_URL", "https://personal-growth-os-1wdg.onrender.com"),
 }
 
@@ -1028,9 +1028,7 @@ async def clear_postpone(pid: str):
     if pid not in ("english", "fae"):
         raise HTTPException(400, "该计划不支持")
     x("UPDATE plans SET postpone_days=0, updated_at=? WHERE id=?", (now(), pid))
-    # 同时删除该计划的已推迟任务，避免「已推迟」区无限堆积
-    x("DELETE FROM tasks WHERE plan_id=? AND status='postponed'", (pid,))
-    return {"ok": True, "postpone_days": 0, "cleared": True}
+    return {"ok": True, "postpone_days": 0}
 
 # ---- 启动 FAE（从点击当天起算 6 个月周期）----
 @app.post("/api/plans/fae/start")
@@ -1048,15 +1046,6 @@ async def start_fae():
          click=f"{CONFIG['web_url']}/overview")
     return {"ok": True, "created": created,
             "progress": plan_progress(q1("SELECT * FROM plans WHERE id='fae'")) or {}}
-
-# ---- 暂停 FAE（回到「等待开启」火箭状态，清掉已生成的 FAE 任务）----
-@app.post("/api/plans/fae/pause")
-def pause_fae():
-    p = q1("SELECT * FROM plans WHERE id='fae'")
-    if not p: raise HTTPException(404, "计划不存在")
-    x("UPDATE plans SET paused=1, start_date=NULL, cur_week=1, cur_day=0, cur_unit=NULL, postpone_days=0, updated_at=? WHERE id='fae'", (now(),))
-    x("DELETE FROM tasks WHERE plan_id='fae'")
-    return {"ok": True, "paused": True}
 
 # ---- 总览沙盘 ----
 @app.get("/api/overview")

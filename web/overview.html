@@ -52,7 +52,7 @@
 <body>
 <nav class="nav">
   <div class="logo">Personal Growth OS<small>OVERVIEW</small></div>
-  <div class="tabs"><a href="/">今日</a><a href="/overview" class="on">总览</a><a href="/reviews">复盘</a></div>
+  <div class="tabs"><a href="/">Today</a><a href="/overview" class="on">总览</a><a href="/reviews">Reviews</a></div>
 </nav>
 <div class="wrap">
   <div id="dateStr" class="ov-sub" style="margin-top:4px"></div>
@@ -94,11 +94,7 @@ const $=id=>document.getElementById(id);
 const esc=s=>(s??'').toString().replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
 async function load(){
- try{
-  const r=await fetch('/api/overview');
-  if(!r.ok) throw new Error('服务器 '+r.status);
-  const d=await r.json();
-  if(!d||typeof d!=='object'||!d.board) throw new Error('返回数据异常');
+  const r=await fetch('/api/overview');const d=await r.json();
   const dd=new Date(d.date+'T00:00:00');
   $('dateStr').textContent=`${dd.getMonth()+1}月${dd.getDate()}日 · 周${'日一二三四五六'[dd.getDay()]} · 执行总览`;
 
@@ -139,11 +135,6 @@ async function load(){
       return `<div class="heat-cell ${cls}${today}" title="${esc(title)}"></div>`;
     }).join('')+'</div>'
   ).join('');
- }catch(e){
-  console.error('[overview] 加载失败',e);
-  const msg='<div class="empty" style="color:#dc2626">⚠️ 总览数据加载失败：'+(e.message||e)+'<br><button class="btn p" onclick="load()">点此重试</button></div>';
-  ['board','milestones','heat'].forEach(id=>{const el=$(id);if(el)el.innerHTML=msg;});
- }
 }
 load();
 </script>
