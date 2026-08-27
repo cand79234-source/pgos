@@ -16,14 +16,14 @@
 <body>
 <nav class="nav">
   <div class="logo">Personal Growth OS<small>DAILY GROWTH</small></div>
-  <div class="tabs"><a href="/" class="on">Today</a><a href="/overview">总览</a><a href="/reviews">Reviews</a></div>
+  <div class="tabs"><a href="/overview">总览</a><a href="/" class="on">今日</a><a href="/reviews">复盘</a></div>
 </nav>
 
 <!-- 主界面（免登录，直接使用） -->
 <div id="mainView" class="app">
   <div class="hero">
     <div class="date" id="dateStr"></div>
-    <h1>Today</h1>
+    <h1>今日任务</h1>
     <div class="bar"><i id="bar" style="width:0%"></i></div>
     <div class="pct"><span id="pct">0%</span><span id="cnt">0 / 0</span></div>
     <div class="nextup" id="nextup" style="display:none"></div>
@@ -47,6 +47,9 @@
   <div id="longTasks"></div>
   <div class="sec-title">临时任务 <span class="n" id="nTemp">0</span></div>
   <div id="tempTasks"></div>
+
+  <div class="sec-title" id="postSec" style="display:none">已推迟 <span class="n" id="nPost">0</span></div>
+  <div id="postTasks"></div>
 
   <footer>Personal Growth OS · 长期计划=路线图 · 执行记录=当前位置<br>未完成≠取消 · 最低剂量仅你主动要求时启用</footer>
 </div>
@@ -79,12 +82,22 @@ async function load(){
     let line=pos.join(' · ');
     const f=p.cur_topic||p.cur_unit;if(f)line+=' —— '+esc(f);
     const cp=p.next_cp?`<div class="wr"><b>检查点</b><span>${esc(p.next_cp)}</span></div>`:'';
-    // 日期区间 + 剩余天数
+    const pd=p.postpone_days||0;
     let periodHtml='';
     const per=p.period;
     if(per&&per.end){
-      const short=(s)=>s?s.slice(5):'';
-      periodHtml=`<div class="wr"><b>周期</b><span>${short(per.start)} ~ ${short(per.end)} · 还剩 <b style="color:#fbbf24">${per.remaining}</b> 天</span></div>`;
+      // 周期（带年份）+ 剩余天数（含推迟欠账）+ 预计完成日期（顺延）
+      const todayObj=new Date(d.date+'T00:00:00');
+      const endObj=new Date(per.end+'T00:00:00');
+      let baseRemain=Math.round((endObj-todayObj)/86400000); if(baseRemain<0)baseRemain=0;
+      const expStr=shiftISO(per.end,pd);
+      const postTag=pd>0?` <b style="color:#dc2626">+${pd}</b>`:'';
+      periodHtml=`<div class="wr"><b>周期</b><span>${fmtISO(per.start)} ~ ${fmtISO(per.end)}</span></div>`
+        +`<div class="wr"><b>进度</b><span>还剩 <b>${baseRemain+pd}</b> 天${postTag} · 预计 ${expStr} 完成</span></div>`;
+      if(pd>0)periodHtml+=`<div class="wr"><b></b><span><button class="btn" onclick="clearPostpone('${p.id}')">清零欠账</button></span></div>`;
+    }else if(p.paused){
+      periodHtml=`<div class="wr"><b>状态</b><span>未启动 · 启动后按周期计算进度</span></div>`
+        +`<div class="wr"><b></b><span><button class="btn p" onclick="startFAE()">🚀 启动 ${esc(p.name)}</button></span></div>`;
     }
     if(!hasPos&&!periodHtml)return '';
     return `<div class="wr"><b>${esc(p.name)}</b><span>${line||'进行中'}</span></div>`+periodHtml+cp;
@@ -94,7 +107,27 @@ async function load(){
   $('nLong').textContent=long.length;$('nTemp').textContent=temp.length;
   $('longTasks').innerHTML=long.map(t=>card(t)).join('')||'<div class="empty">今日无长期任务</div>';
   $('tempTasks').innerHTML=temp.map(t=>card(t)).join('')||'<div class="empty">暂无临时任务</div>';
+
+  // 已推迟分区（不消失，红色区分；当天推迟可反悔，跨天延期不可撤销）
+  const post=d.postponed||[];
+  $('nPost').textContent=post.length;
+  $('postSec').style.display=post.length?'':'none';
+  $('postTasks').innerHTML=post.map(t=>card(t)).join('')||'';
   if(d.progress.total>0&&d.progress.done===d.progress.total)celebrate();
+}
+
+// 日期格式：YYYY/MM/DD
+function fmtISO(s){if(!s)return '';const d=new Date(s+'T00:00:00');const m=String(d.getMonth()+1).padStart(2,'0'),dd=String(d.getDate()).padStart(2,'0');return `${d.getFullYear()}/${m}/${dd}`;}
+// 日期 +N 天 → YYYY/MM/DD
+function shiftISO(s,n){if(!s)return '';const d=new Date(s+'T00:00:00');d.setDate(d.getDate()+n);const m=String(d.getMonth()+1).padStart(2,'0'),dd=String(d.getDate()).padStart(2,'0');return `${d.getFullYear()}/${m}/${dd}`;}
+
+async function clearPostpone(pid){
+  await fetch(`/api/plans/${pid}/clear_postpone`,{method:'POST'});
+  toast('✓ 欠账已清零，预计完成日期已回弹');load();
+}
+async function startFAE(){
+  const r=await fetch('/api/plans/fae/start',{method:'POST'});const d=await r.json();
+  if(d.ok){toast('🚀 FAE 已启动，今天起开始计算进度');load();}else toast('启动失败');
 }
 
 function card(t){
@@ -114,6 +147,8 @@ function card(t){
   if(doneCss){
     const cd = t.completed_at ? t.completed_at.slice(0,10) : '';
     stateTag=`<span class="chip doneTag">✅ ${cd||'已完成'}</span>`;
+  }else if(t.status==='postponed'){
+    stateTag=`<span class="chip lateTag">⏸ 已推迟</span>`;
   }else{
     // 计算拖了几天（原定日期到今天）
     let days=0;
@@ -130,7 +165,12 @@ function card(t){
   let ops='';
   if(t.status==='pending')ops=`<button class="btn p" onclick="op('${t.id}','in_progress')">开始做</button><button class="btn g" onclick="op('${t.id}','completed')">完成</button><button class="btn w" onclick="op('${t.id}','postponed')">推迟</button>`;
   else if(t.status==='in_progress')ops=`<button class="btn g" onclick="op('${t.id}','completed')">完成</button><button class="btn w" onclick="op('${t.id}','postponed')">推迟</button>`;
-  else if(t.status==='postponed')ops=`<button class="btn p" onclick="op('${t.id}','pending')">重新入队</button>`;
+  else if(t.status==='postponed'){
+    // 当天推迟可反悔（重新入队 -1）；跨天延期已成事实，不可撤销
+    ops = (t.postponed_at && t.postponed_at.slice(0,10)===window.__today)
+      ? `<button class="btn p" onclick="op('${t.id}','pending')">重新入队</button>`
+      : `<span class="chip" style="color:#b45309">跨天延期·不可撤销</span>`;
+  }
   if(t.status==='completed')ops=`<button class="btn" onclick="op('${t.id}','pending')">撤销完成</button>`;
   const borderCss = doneCss ? 'done' : (t.status==='postponed'?'late':'');
   return `<div class="task ${borderCss}"><div class="tt">${esc(t.title)}</div><div class="tm">${chips.join('')}</div>${t.notes?`<div class="tn">${esc(t.notes)}</div>`:''}<div class="ops">${ops}</div></div>`;

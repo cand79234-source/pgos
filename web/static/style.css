@@ -24,7 +24,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei
 .addbox button{border:none;background:var(--brand);color:#fff;font-weight:700;font-size:14px;padding:0 18px;border-radius:9px;cursor:pointer}
 .addbox .hint{font-size:11px;color:var(--muted);margin-top:6px}
 .sec-title{display:flex;align-items:center;gap:8px;margin:18px 0 8px;font-size:13px;font-weight:800;color:#334155}
-.sec-title .n{background:var(--brand);color:#fff;font-size:11px;padding:1px 8px;border-radius:999px}
+.sec-title .n{background:var(--brand);color:#fff;font-size:11px;font-weight:700;padding:0 10px;height:22px;display:inline-flex;align-items:center;border-radius:999px;line-height:1}
 .where{background:var(--card);border:1px solid var(--line);border-left:4px solid var(--brand);border-radius:10px;padding:12px 14px;margin-top:12px;box-shadow:var(--sh)}
 .where .wt{font-size:11px;font-weight:800;color:var(--brand);letter-spacing:.1em;margin-bottom:6px}
 .where .wr{display:flex;gap:8px;font-size:13px;padding:3px 0;flex-wrap:wrap}
@@ -34,7 +34,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei
 .task.done .tt{text-decoration:line-through;color:var(--muted)}
 .task .tt{font-weight:700;font-size:15px}
 .task .tm{display:flex;flex-wrap:wrap;gap:5px;margin-top:6px}
-.chip{font-size:11px;padding:2px 8px;border-radius:999px;font-weight:600;background:#f1f5f9;color:#475569}
+/* 椭圆标签统一规格：高度22px · 左右10px · 字号11px · 圆角999px */
+.chip,.st{font-size:11px;font-weight:700;padding:0 10px;height:22px;display:inline-flex;align-items:center;border-radius:999px;white-space:nowrap;line-height:1}
+.chip{background:#f1f5f9;color:#475569}
 .chip.plan{background:var(--brand-bg);color:var(--brand)}
 .chip.time{background:#eff6ff;color:var(--blue)}
 .chip.due{background:#fff7ed;color:#c2410c}
@@ -47,7 +49,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei
 .btn.g{background:var(--green);border-color:var(--green);color:#fff}
 .btn.w{color:var(--orange);border-color:#fde68a;background:#fffbeb}
 .btn:active{transform:scale(.97)}
-.st{font-size:11px;font-weight:800;padding:2px 9px;border-radius:999px;white-space:nowrap}
+.st{white-space:nowrap}
 .st.pending{background:#f1f5f9;color:#475569}
 .st.in_progress{background:#dbeafe;color:#1d4ed8}
 .st.completed{background:#dcfce7;color:#15803d}
