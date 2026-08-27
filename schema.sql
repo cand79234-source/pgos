@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS plans (
     stage_details TEXT,                      -- JSON：{阶段索引: 每行一周主题文本} 阶段细则（用户录入）
     postpone_days INTEGER DEFAULT 0,         -- 推迟欠账累计（+N），只影响预计完成日期，不影响百分比
     paused      INTEGER DEFAULT 0,           -- 1=未启动（FAE 默认暂停，启动后才生成任务与记账）
+    last_advance_date TEXT,                  -- 最近一次位置推进的日期（防完成→撤销→再完成重复推进）
     updated_at  TEXT
 );
 

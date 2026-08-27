@@ -98,6 +98,9 @@ async function load(){
       const ppost=(d.postponed||[]).filter(t=>t.plan_id===p.id).length;
       if(pd>0||ppost>0)periodHtml+=`<div class="wr"><b></b><span><button class="btn" onclick="clearPostpone('${p.id}')">清零欠账</button></span></div>`;
       if(p.id==='fae')periodHtml+=`<div class="wr"><b></b><span><button class="btn w" onclick="pauseFAE()">⏸ 暂停 FAE（回到未启动）</button></span></div>`;
+      // 手动调整位置（真实进度可随时拨：完成→+1；周末补完可跳进度）
+      if(p.id==='english')periodHtml+=`<div class="wr"><b></b><span><button class="btn" onclick="adjustPos('${p.id}')">✏️ 调整 Day（当前位置 Day ${p.cur_day||1}）</button></span></div>`;
+      if(p.id==='fae')periodHtml+=`<div class="wr"><b></b><span><button class="btn" onclick="adjustPos('${p.id}')">✏️ 调整位置（当前 Week ${p.cur_week||1} · Day ${p.cur_day||1}）</button></span></div>`;
     }else if(p.paused){
       periodHtml=`<div class="wr"><b>状态</b><span>未启动 · 启动后按周期计算进度</span></div>`
         +`<div class="wr"><b></b><span><button class="btn p" onclick="startFAE()">🚀 启动 ${esc(p.name)}</button></span></div>`;
@@ -136,6 +139,33 @@ async function pauseFAE(){
   if(!confirm('暂停 FAE 并回到「等待开启」？已生成的 FAE 任务会被清除。'))return;
   const r=await fetch('/api/plans/fae/pause',{method:'POST'});const d=await r.json();
   if(d.ok){toast('⏸ FAE 已暂停，回到等待开启');load();}else toast('操作失败');
+}
+/* ✏️ 手动调整位置：English 填 Day，FAE 填 Week+Day。拨到即算已推进到该点，跳过即补完 */
+async function adjustPos(pid){
+  const isEnglish = pid==='english';
+  if(isEnglish){
+    const v=prompt('填你实际学到第几天（Day 1~7）。\n例如周末补完可从 Day 2 直接调到 Day 7。\n\n当前进度调整到：');
+    if(v===null)return;
+    const day=parseInt(v,10);
+    if(!day||day<1||day>7){toast('请输入 Day 1~7');return;}
+    await doAdjustPos(pid,{cur_day:day});
+  }else{
+    const v=prompt('填你实际学到第几周（Week 1~24）。\n暂停冻结，启动后从这里继续。\n\n当前进度调整到第几周：');
+    if(v===null)return;
+    const week=parseInt(v,10);
+    if(!week||week<1||week>24){toast('请输入 Week 1~24');return;}
+    const vd=prompt('该周第几天（Day 1~6）：');
+    if(vd===null)return;
+    const day=parseInt(vd,10);
+    if(!day||day<1||day>6){toast('请输入 Day 1~6');return;}
+    await doAdjustPos(pid,{cur_week:week,cur_day:day});
+  }
+}
+async function doAdjustPos(pid,body){
+  const r=await fetch(`/api/plans/${pid}/set_position`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  const d=await r.json();
+  if(d.ok){toast(`✓ 位置已调整为 ${d.cur_week?('Week '+d.cur_week+' · '):''}Day ${d.cur_day}，明天从这里继续`);load();}
+  else toast('调整失败：'+(d.detail||''));
 }
 
 function card(t){

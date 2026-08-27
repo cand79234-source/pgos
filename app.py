@@ -191,6 +191,7 @@ def init_db():
                     "ALTER TABLE plans ADD COLUMN stage_details TEXT",
                     "ALTER TABLE plans ADD COLUMN postpone_days INTEGER DEFAULT 0",
                     "ALTER TABLE plans ADD COLUMN paused INTEGER DEFAULT 0",
+                    "ALTER TABLE plans ADD COLUMN last_advance_date TEXT",
                     "ALTER TABLE tasks ADD COLUMN postponed_at TEXT"):
             try:
                 _exec(alt)
@@ -210,6 +211,8 @@ def init_db():
         try: db().execute("ALTER TABLE plans ADD COLUMN postpone_days INTEGER DEFAULT 0")
         except Exception: pass
         try: db().execute("ALTER TABLE plans ADD COLUMN paused INTEGER DEFAULT 0")
+        except Exception: pass
+        try: db().execute("ALTER TABLE plans ADD COLUMN last_advance_date TEXT")
         except Exception: pass
         try: db().execute("ALTER TABLE tasks ADD COLUMN postponed_at TEXT")
         except Exception: pass
@@ -545,6 +548,11 @@ def gen_today(force=False):
 def advance(pid):
     p = q1("SELECT * FROM plans WHERE id=?", (pid,))
     if not p: return
+    # 防重复推进：同一天内位置已推进过则不再推进
+    # （覆盖"完成→撤销→再完成"等场景，避免位置与真实进度脱节）
+    td = today()
+    if (p.get("last_advance_date") or "")[:10] == td:
+        return
     if pid == "english":
         # 一天 = 输入+内化+输出 三段合一，完成当天任务即进入下一天
         day = (p["cur_day"] or 0) + 1
@@ -555,8 +563,8 @@ def advance(pid):
             if week > total_weeks: week = total_weeks
         topic = _en_week_topic(p, week) or p["cur_topic"]
         pending = [f"Day {day}：输入", f"Day {day}：内化", f"Day {day}：输出"]
-        x("UPDATE plans SET cur_week=?,cur_day=?,cur_topic=?,cur_unit=?,pending=?,updated_at=? WHERE id=?",
-          (week, day, topic, f"Day {day}", J(pending), now(), pid))
+        x("UPDATE plans SET cur_week=?,cur_day=?,cur_topic=?,cur_unit=?,pending=?,last_advance_date=?,updated_at=? WHERE id=?",
+          (week, day, topic, f"Day {day}", J(pending), td, now(), pid))
     elif pid == "fae":
         # 每周 6 个学习日：当天完成 → 本周已学 +1；学满 6 天才推进到下一周（未满则停留原周）
         pday = (p["cur_day"] or 0) + 1
@@ -574,8 +582,8 @@ def advance(pid):
             w = cp.get("w")
             if isinstance(w, int) and w >= week:
                 ncp = f"Week {w}：{cp['name']}"; break
-        x("UPDATE plans SET cur_week=?,cur_day=?,cur_unit=?,pending=?,next_cp=?,updated_at=? WHERE id=?",
-          (week, pday, (nxt.split("：",1)[1] if nxt and "：" in nxt else nxt), J(pending), ncp, now(), pid))
+        x("UPDATE plans SET cur_week=?,cur_day=?,cur_unit=?,pending=?,next_cp=?,last_advance_date=?,updated_at=? WHERE id=?",
+          (week, pday, (nxt.split("：",1)[1] if nxt and "：" in nxt else nxt), J(pending), ncp, td, now(), pid))
 
 # ==================== Scheduler ====================
 sched = bg.BackgroundScheduler(timezone="Asia/Shanghai")
@@ -882,14 +890,18 @@ async def set_status(tid: str, req: Request):
             elif status == "completed" and t["status"] == "postponed":
                 # 补完成：欠账视为补上了，-1
                 x("UPDATE plans SET postpone_days=CASE WHEN COALESCE(postpone_days,0)>0 THEN postpone_days-1 ELSE 0 END WHERE id=?", (t["plan_id"],))
-    # 完成长期任务 → 推进当前位置（每条任务只推进一次，撤销重做不重复计）
-    # 注意：推迟区任务的「补完成」不推进位置（位置已走到后面）
+    # 完成长期任务 → 推进当前位置
+    # 去重交给 advance() 内的 last_advance_date（同一天只推进一次），
+    # 覆盖"完成→撤销→再完成"与"推迟区补完成"等场景，位置不与真实进度脱节
     advanced = False
-    if status == "completed" and t["type"] == "long_term" and t["plan_id"] and not t.get("advanced"):
+    if status == "completed" and t["type"] == "long_term" and t["plan_id"]:
+        # 推迟区任务的「补完成」不推进位置（位置已走到后面）
         if t["status"] != "postponed":
+            before_w = q1("SELECT cur_week,cur_day FROM plans WHERE id=?", (t["plan_id"],))
             advance(t["plan_id"])
-            advanced = True
-        x("UPDATE tasks SET advanced=1 WHERE id=?", (tid,))
+            after = q1("SELECT cur_week,cur_day FROM plans WHERE id=?", (t["plan_id"],))
+            advanced = (before_w and after and
+                        (before_w["cur_week"], before_w["cur_day"]) != (after["cur_week"], after["cur_day"]))
         # 自媒体视频：完成一条 → output_count +1
         if t["plan_id"] == "content":
             cp = q1("SELECT * FROM plans WHERE id='content'")
@@ -1047,7 +1059,7 @@ async def abandon_task(tid: str):
     x("DELETE FROM tasks WHERE id=?", (tid,))
     return {"ok": True}
 
-# ---- 位置修正（数据修复用：手动微调 cur_week/cur_day，重生成今日任务）----
+# ---- 位置修正（用户可手动拨位置：微调 cur_week/cur_day，重生成今日任务）----
 @app.post("/api/plans/{pid}/set_position")
 async def set_position(pid: str, req: Request):
     if pid not in ("english", "fae"):
@@ -1059,17 +1071,26 @@ async def set_position(pid: str, req: Request):
     day = body.get("cur_day")
     if week is None and day is None:
         raise HTTPException(400, "至少提供 cur_week 或 cur_day")
-    week = int(week) if week is not None else p["cur_week"]
-    day = int(day) if day is not None else p["cur_day"]
+    def _to_int(v):
+        # 容错 "Day 5" / "5" / "week3" 等输入；返回 None 表示无法解析
+        s = re.sub(r"[^0-9]", "", str(v))
+        return int(s) if s else None
+    week = _to_int(week) if week is not None else None
+    day = _to_int(day) if day is not None else None
+    # 未提供/无法解析的维度，沿用当前值
+    week = week if week is not None else (p["cur_week"] or 1)
+    day = day if day is not None else (p["cur_day"] or 1)
     if week < 1 or day < 1:
         raise HTTPException(400, "位置必须为正数")
-    x("UPDATE plans SET cur_week=?, cur_day=?, updated_at=? WHERE id=?", (week, day, now(), pid))
+    td = today()
+    # 手动拨到即算"已推进到该点"，重置去重日期，后续当天完成不再额外 +1
+    x("UPDATE plans SET cur_week=?, cur_day=?, last_advance_date=?, updated_at=? WHERE id=?",
+      (week, day, td, now(), pid))
     # 位置修正后的今日任务处理：
     # - 今天还有未完成任务 → 删掉（标题与位置不符），今天没收工才按新位置重生成
     # - 今天已收工（有 completed）→ 不新增任务，明天自然按新位置生成，避免多出任务变新欠账
     regen = 0
     if not p.get("paused"):
-        td = today()
         n_done = q1("SELECT COUNT(*) AS n FROM tasks WHERE task_date=? AND plan_id=? AND type='long_term' AND status='completed'", (td, pid))["n"]
         x("DELETE FROM tasks WHERE task_date=? AND plan_id=? AND type='long_term' AND status IN ('pending','in_progress')", (td, pid))
         if n_done == 0:
