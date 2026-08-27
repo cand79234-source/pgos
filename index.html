@@ -95,6 +95,7 @@ async function load(){
       periodHtml=`<div class="wr"><b>周期</b><span>${fmtISO(per.start)} ~ ${fmtISO(per.end)}</span></div>`
         +`<div class="wr"><b>进度</b><span>还剩 <b>${baseRemain+pd}</b> 天${postTag} · 预计 ${expStr} 完成</span></div>`;
       if(pd>0)periodHtml+=`<div class="wr"><b></b><span><button class="btn" onclick="clearPostpone('${p.id}')">清零欠账</button></span></div>`;
+      if(p.id==='fae')periodHtml+=`<div class="wr"><b></b><span><button class="btn w" onclick="pauseFAE()">⏸ 暂停 FAE（回到未启动）</button></span></div>`;
     }else if(p.paused){
       periodHtml=`<div class="wr"><b>状态</b><span>未启动 · 启动后按周期计算进度</span></div>`
         +`<div class="wr"><b></b><span><button class="btn p" onclick="startFAE()">🚀 启动 ${esc(p.name)}</button></span></div>`;
@@ -128,6 +129,11 @@ async function clearPostpone(pid){
 async function startFAE(){
   const r=await fetch('/api/plans/fae/start',{method:'POST'});const d=await r.json();
   if(d.ok){toast('🚀 FAE 已启动，今天起开始计算进度');load();}else toast('启动失败');
+}
+async function pauseFAE(){
+  if(!confirm('暂停 FAE 并回到「等待开启」？已生成的 FAE 任务会被清除。'))return;
+  const r=await fetch('/api/plans/fae/pause',{method:'POST'});const d=await r.json();
+  if(d.ok){toast('⏸ FAE 已暂停，回到等待开启');load();}else toast('操作失败');
 }
 
 function card(t){

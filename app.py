@@ -867,6 +867,9 @@ async def set_status(tid: str, req: Request):
         if pl and not pl.get("paused"):
             if status == "postponed":
                 x("UPDATE plans SET postpone_days=COALESCE(postpone_days,0)+1 WHERE id=?", (t["plan_id"],))
+                # English 推迟时当前位置也前进，避免「推迟区 Day3 + 今日任务还是 Day3」重复
+                if t["plan_id"] == "english":
+                    advance(t["plan_id"])
             elif status == "pending" and t["status"] == "postponed" and (t.get("postponed_at") or "")[:10] == td:
                 x("UPDATE plans SET postpone_days=CASE WHEN COALESCE(postpone_days,0)>0 THEN postpone_days-1 ELSE 0 END WHERE id=?", (t["plan_id"],))
     # 完成长期任务 → 推进当前位置（每条任务只推进一次，撤销重做不重复计）
@@ -1046,6 +1049,20 @@ async def start_fae():
          click=f"{CONFIG['web_url']}/overview")
     return {"ok": True, "created": created,
             "progress": plan_progress(q1("SELECT * FROM plans WHERE id='fae'")) or {}}
+
+# ---- 暂停 FAE（回到未启动状态）----
+@app.post("/api/plans/fae/pause")
+async def pause_fae():
+    p = q1("SELECT * FROM plans WHERE id='fae'")
+    if not p: raise HTTPException(404, "计划不存在")
+    if p.get("paused"):
+        return {"ok": True, "already_paused": True}
+    x("UPDATE plans SET paused=1, start_date=NULL, cur_week=1, cur_day=0, cur_unit=NULL, postpone_days=0, updated_at=? WHERE id='fae'",
+      (now(),))
+    # 清除未完成的 FAE 任务，避免暂停后还堆在今日/已推迟
+    td = today()
+    x("DELETE FROM tasks WHERE plan_id='fae' AND task_date>=? AND status IN ('pending','in_progress','postponed')", (td,))
+    return {"ok": True}
 
 # ---- 总览沙盘 ----
 @app.get("/api/overview")
