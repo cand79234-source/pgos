@@ -347,7 +347,8 @@ def _fmt_md(d):
     return f"{d.month}/{d.day}"
 
 def en_derived(plan):
-    """English 当前 Day/Week：由 start_date 日历推导（业务日 03:00 切分）；无起点则回退原字段"""
+    """English 当前 Day/Week：由 start_date 日历推导（业务日 03:00 切分）；无起点则回退原字段。
+    返回：week=全局主题周(从1计)，day=全局累计天(从1计)，day_in_week=本周内第几天(1-7)。"""
     sd = plan.get("start_date")
     try:
         sd = date.fromisoformat(str(sd)[:10]) if sd else None
@@ -357,8 +358,10 @@ def en_derived(plan):
         return None
     td = datetime.now(TZ)
     biz = td.date() if td.hour >= 3 else (td.date() - timedelta(days=1))  # 业务日：03:00 前算前一天
-    day = max(1, (biz - sd).days + 1)   # 业务日推导：今天进行到第几天
-    return {"week": (day - 1) // 7 + 1, "day": day}
+    day = max(1, (biz - sd).days + 1)   # 业务日推导：今天进行到第几天（全局累计）
+    week = (day - 1) // 7 + 1
+    day_in_week = (day - 1) % 7 + 1       # 一个主题周只有 7 天，Day 必须在 1-7 内
+    return {"week": week, "day": day, "day_in_week": day_in_week}
 
 def en_progress(plan):
     """English 进度：由 start_date 日历推导当前 Day/Week，再换算阶段百分比与检查点"""
@@ -366,11 +369,17 @@ def en_progress(plan):
     if dv is None:
         cur_week, cur_day = max(1, plan.get("cur_week") or 1), max(1, plan.get("cur_day") or 1)
     else:
-        cur_week, cur_day = dv["week"], dv["day"]
+        cur_week, cur_day = dv["week"], dv["day"]   # cur_day = 全局累计天
     stage_idx, stage_start = _en_stage_of(cur_week)
     stage = EN_STAGES[stage_idx]
     stage_days = stage["weeks"] * 7
-    stage_done = (cur_week - stage_start) * 7 + (cur_day - 1)   # 本阶段已完成天数
+    if dv is None:
+        # 旧模型（无 start_date）：cur_day 即阶段内「周内日」，直接用阶段内坐标
+        stage_done = (cur_week - stage_start) * 7 + (cur_day - 1)
+    else:
+        # 新模型：cur_day 是全局累计天，按阶段起点全局 Day 换算「本阶段已过天数」
+        stage_start_day = (stage_start - 1) * 7 + 1
+        stage_done = cur_day - stage_start_day
     stage_done = max(0, min(stage_done, stage_days))
     stage_pct = round(stage_done * 100 / stage_days, 1)
     # 全局：前面阶段若被提前完成则计满额；当前阶段按实际
@@ -380,7 +389,7 @@ def en_progress(plan):
     today_d = datetime.now(TZ).date()
     cp_date = today_d + timedelta(days=stage_days - stage_done)
     return {
-        "done_days": (cur_week - 1) * 7 + (cur_day - 1), "stage_idx": stage_idx, "stage_name": stage["name"],
+        "done_days": stage_done, "stage_idx": stage_idx, "stage_name": stage["name"],
         "stage_start_week": stage_start, "stage_weeks": stage["weeks"],
         "stage_done": stage_done, "stage_days": stage_days,
         "stage_pct": stage_pct, "global_pct": global_pct,
@@ -533,7 +542,7 @@ def gen_today(force=False):
             # 一个任务 = 一整天三段（1h输入 / 1h内化 / 1h输出）
             dv = en_derived(p)
             ew = dv["week"] if dv else (p["cur_week"] or 1)
-            ed = dv["day"] if dv else (p["cur_day"] or 1)
+            ed = dv["day_in_week"] if dv else (p["cur_day"] or 1)
             topic = _en_week_topic(p, ew) or p["cur_topic"]
             pending = P(p["pending"], [])
             stage_name = EN_STAGES[_en_stage_of(ew)[0]]["name"]
@@ -836,7 +845,7 @@ def api_today():
         if p["id"] == "english":
             dv = en_derived(p)
             if dv:
-                p["cur_week"], p["cur_day"] = dv["week"], dv["day"]
+                p["cur_week"], p["cur_day"] = dv["week"], dv["day_in_week"]
         plans.append({"id":p["id"],"name":p["name"],"goal":p["goal"],"normal":p["normal"],
                        "cur_week":p["cur_week"],"cur_day":p["cur_day"],"cur_topic":p["cur_topic"],
                        "cur_unit":p["cur_unit"],"next_cp": display_cp(p),
@@ -954,7 +963,7 @@ def api_plans():
         if p["id"] == "english":
             dv = en_derived(p)
             if dv:
-                p["cur_week"], p["cur_day"] = dv["week"], dv["day"]
+                p["cur_week"], p["cur_day"] = dv["week"], dv["day_in_week"]
         p["period"] = plan_period(p)
         p["progress"] = plan_progress(p)
         p["next_cp"] = display_cp(p)
@@ -1106,16 +1115,27 @@ async def set_position(pid: str, req: Request):
         s = re.sub(r"[^0-9]", "", str(v))
         return int(s) if s else None
     if pid == "english":
-        # 手动调整 = 平移 start_date 锚点，使今天对应目标 Day（进度由日历推导，无需改 cur_day）
-        day = _to_int(body.get("cur_day") or body.get("day"))
-        if day is None or day < 1:
-            raise HTTPException(400, "请提供有效的 Day（正整数）")
-        new_start = (date.fromisoformat(bdate()) - timedelta(days=day - 1)).isoformat()
-        x("UPDATE plans SET start_date=?, updated_at=? WHERE id=?", (new_start, now(), pid))
+        # 手动调整 = 把今天的 English 任务切换到指定「主题周 + 日」位置（复习/补旧内容），
+        # 不动 start_date，也不动总览进度锚点（已学过的内容不计入新进度）。
+        total_weeks = sum(s["weeks"] for s in EN_STAGES)
+        week = _to_int(body.get("week") or body.get("cur_week"))
+        day = _to_int(body.get("day") or body.get("cur_day"))
+        if week is None or day is None or week < 1 or day < 1 or day > 7 or week > total_weeks:
+            raise HTTPException(400, f"请提供有效的 主题周(1-{total_weeks}) 与 日(1-7)")
+        topic = _en_week_topic(p, week) or p["cur_topic"]
+        stage_name = EN_STAGES[_en_stage_of(week)[0]]["name"]
+        pending = P(p["pending"], [])
+        notes = (f"（手动调整）当前位置：{stage_name} · 主题周{week} · Day {day}（{topic or '主题待定'}）\n"
+                 f"今日三段：{' / '.join(pending[:3])}\n"
+                 f"结构：1h输入(语法+20词+对话) / 1h内化(10句关于自己) / 1h输出(改写+录音)\n"
+                 f"复习：2/4/7天节奏\n检查点：{display_cp(p)}")
         td = today()
-        if not q1("SELECT COUNT(*) AS n FROM tasks WHERE task_date=? AND plan_id=? AND  type='long_term'", (td, pid))["n"]:
-            _regen_today_for(pid)
-        return {"ok": True, "start_date": new_start, "day": day}
+        # 只替换今天 english 的未完成任务，保留已完成与推迟区；不动 start_date/进度
+        x("DELETE FROM tasks WHERE task_date=? AND plan_id=? AND type='long_term' AND status IN ('pending','in_progress')", (td, pid))
+        tid = _next_task_id(td)
+        x("INSERT INTO tasks(id,title,type,plan_id,task_date,status,priority,duration,notes,created_at) VALUES(?,?,'long_term',?,?,?,?,?,?,?)",
+          (tid, f"English · 主题周{week} Day{day}（{topic or '主题待定'}）", pid, td, "pending", "normal", p["normal"], notes, now()))
+        return {"ok": True, "week": week, "day": day, "progress_unchanged": True}
     # FAE 维持原 cur_week/cur_day 微调逻辑
     week = _to_int(body.get("cur_week"))
     day = _to_int(body.get("cur_day"))

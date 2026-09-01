@@ -53,6 +53,23 @@
 
   <footer>Personal Growth OS · 长期计划=路线图 · 执行记录=当前位置<br>未完成≠取消 · 最低剂量仅你主动要求时启用</footer>
 </div>
+<div id="posPanel" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:50;align-items:center;justify-content:center;">
+  <div style="background:#fff;border-radius:14px;padding:20px;width:330px;max-width:92vw;box-shadow:0 10px 40px rgba(0,0,0,.3);">
+    <div style="font-weight:700;margin-bottom:4px">English 调整位置</div>
+    <div style="font-size:12px;color:#666;margin-bottom:12px">只改今日任务，总览进度不动（复习/补旧内容）</div>
+    <label style="display:block;margin:8px 0 4px;font-size:13px">阶段</label>
+    <select id="posStage" style="width:100%;padding:8px;border-radius:8px;border:1px solid #ddd"></select>
+    <label style="display:block;margin:8px 0 4px;font-size:13px">主题周</label>
+    <select id="posWeek" style="width:100%;padding:8px;border-radius:8px;border:1px solid #ddd"></select>
+    <label style="display:block;margin:8px 0 4px;font-size:13px">日（1-7）</label>
+    <select id="posDay" style="width:100%;padding:8px;border-radius:8px;border:1px solid #ddd"></select>
+    <div id="posErr" style="color:#dc2626;font-size:12px;margin-top:8px;min-height:14px"></div>
+    <div style="margin-top:14px;display:flex;gap:8px;justify-content:flex-end">
+      <button class="btn" onclick="closePosPanel()">取消</button>
+      <button class="btn p" onclick="confirmPos()">确认调整到今日</button>
+    </div>
+  </div>
+</div>
 <div class="toast" id="toast"></div>
 
 <script>
@@ -69,6 +86,7 @@ async function load(){
   if(!r.ok)throw new Error('HTTP '+r.status+' '+r.statusText);
   const d=await r.json();
   window.__today=d.date;
+  window.__today_plans=d.plans;
   $('dateStr').textContent=fmtDate(d.date);
   $('bar').style.width=d.progress.pct+'%';
   $('pct').textContent=d.progress.pct+'% 今日进度';
@@ -102,7 +120,7 @@ async function load(){
       if(pd>0||ppost>0)periodHtml+=`<div class="wr"><b></b><span><button class="btn" onclick="clearPostpone('${p.id}')">清零欠账</button></span></div>`;
       if(p.id==='fae')periodHtml+=`<div class="wr"><b></b><span><button class="btn w" onclick="pauseFAE()">⏸ 暂停 FAE（回到未启动）</button></span></div>`;
       // 手动调整位置（真实进度可随时拨：完成→+1；周末补完可跳进度）
-      if(p.id==='english')periodHtml+=`<div class="wr"><b></b><span><button class="btn" onclick="adjustPos('${p.id}')">✏️ 调整 Day（当前位置 Day ${p.cur_day||1}）</button></span></div>`;
+      if(p.id==='english')periodHtml+=`<div class="wr"><b></b><span><button class="btn" onclick="adjustPos('${p.id}')">✏️ 调整位置（当前 主题周${p.cur_week||1} · Day ${p.cur_day||1}）</button></span></div>`;
       if(p.id==='fae')periodHtml+=`<div class="wr"><b></b><span><button class="btn" onclick="adjustPos('${p.id}')">✏️ 调整位置（当前 Week ${p.cur_week||1} · Day ${p.cur_day||1}）</button></span></div>`;
     }else if(p.paused){
       periodHtml=`<div class="wr"><b>状态</b><span>未启动 · 启动后按周期计算进度</span></div>`
@@ -148,32 +166,58 @@ async function pauseFAE(){
   const r=await fetch('/api/plans/fae/pause',{method:'POST'});const d=await r.json();
   if(d.ok){toast('⏸ FAE 已暂停，回到等待开启');load();}else toast('操作失败');
 }
-/* ✏️ 手动调整位置：English 填 Day，FAE 填 Week+Day。拨到即算已推进到该点，跳过即补完 */
+/* ✏️ English 手动调整位置：级联下拉（阶段→主题周→日），只改今日任务，进度锚点不动 */
+const EN_STAGES=[{name:'阶段0：基础重建',weeks:12},{name:'阶段1：旅行场景',weeks:12},{name:'阶段2：工作沟通',weeks:16},{name:'阶段3：雅思输入',weeks:16},{name:'阶段4：雅思输出',weeks:16},{name:'阶段5：冲刺B2',weeks:16}];
+const EN_WEEK_START=[];(function(){let s=1;EN_STAGES.forEach((st,i)=>{EN_WEEK_START[i]=s;s+=st.weeks;});})();
+function fillPosWeek(stageIdx){
+  const wc=$('posWeek');
+  const start=EN_WEEK_START[stageIdx],weeks=EN_STAGES[stageIdx].weeks;
+  wc.innerHTML=Array.from({length:weeks},(_,k)=>`<option value="${start+k}">主题周 ${start+k}</option>`).join('');
+}
+function fillPosSelects(curWeek,curDay){
+  const sc=$('posStage');
+  sc.innerHTML=EN_STAGES.map((st,i)=>`<option value="${i}">${st.name}（主题周 ${EN_WEEK_START[i]}-${EN_WEEK_START[i]+st.weeks-1}）</option>`).join('');
+  let idx=0;for(let i=0;i<EN_STAGES.length;i++){if(curWeek>=EN_WEEK_START[i]&&curWeek<EN_WEEK_START[i]+EN_STAGES[i].weeks)idx=i;}
+  sc.value=String(idx);fillPosWeek(idx);
+  $('posWeek').value=String(curWeek);
+  $('posDay').value=String(Math.min(7,Math.max(1,curDay||1)));
+}
+$('posStage').addEventListener('change',e=>fillPosWeek(parseInt(e.target.value,10)));
+function openPosPanel(pid){
+  const p=(window.__today_plans||[]).find(x=>x.id===pid)||{};
+  fillPosSelects(p.cur_week||1,p.cur_day||1);
+  $('posErr').textContent='';
+  $('posPanel').style.display='flex';
+}
+function closePosPanel(){$('posPanel').style.display='none';}
+async function confirmPos(){
+  const week=parseInt($('posWeek').value,10),day=parseInt($('posDay').value,10);
+  if(!week||!day||day<1||day>7){$('posErr').textContent='主题周与日(1-7)必须有效';return;}
+  closePosPanel();
+  await doAdjustPos('english',{week,day});
+}
+/* FAE 维持原 prompt 微调（未启用，保持不动）；English 走级联面板 */
 async function adjustPos(pid){
-  const isEnglish = pid==='english';
-  if(isEnglish){
-    const v=prompt('填你实际学到第几天（Day 1~7）。\n例如周末补完可从 Day 2 直接调到 Day 7。\n\n当前进度调整到：');
-    if(v===null)return;
-    const day=parseInt(v,10);
-    if(!day||day<1||day>7){toast('请输入 Day 1~7');return;}
-    await doAdjustPos(pid,{cur_day:day});
-  }else{
-    const v=prompt('填你实际学到第几周（Week 1~24）。\n暂停冻结，启动后从这里继续。\n\n当前进度调整到第几周：');
-    if(v===null)return;
-    const week=parseInt(v,10);
+  if(pid!=='english'){
+    const v=prompt('填你实际学到第几周（Week 1~24）。');
+    if(v===null)return;const week=parseInt(v,10);
     if(!week||week<1||week>24){toast('请输入 Week 1~24');return;}
     const vd=prompt('该周第几天（Day 1~6）：');
-    if(vd===null)return;
-    const day=parseInt(vd,10);
+    if(vd===null)return;const day=parseInt(vd,10);
     if(!day||day<1||day>6){toast('请输入 Day 1~6');return;}
     await doAdjustPos(pid,{cur_week:week,cur_day:day});
+    return;
   }
+  openPosPanel(pid);
 }
 async function doAdjustPos(pid,body){
   const r=await fetch(`/api/plans/${pid}/set_position`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
   const d=await r.json();
-  if(d.ok){toast(`✓ 位置已调整为 ${d.cur_week?('Week '+d.cur_week+' · '):''}Day ${d.cur_day}，明天从这里继续`);load();}
-  else toast('调整失败：'+(d.detail||''));
+  if(d.ok){
+    if(d.progress_unchanged) toast(`✓ 今日任务已调整到 主题周${d.week} Day${d.day}，总览进度不变`);
+    else toast(`✓ 位置已调整为 ${d.cur_week?('Week '+d.cur_week+' · '):''}Day ${d.cur_day}，明天从这里继续`);
+    load();
+  } else toast('调整失败：'+(d.detail||JSON.stringify(d)));
 }
 
 function card(t){
