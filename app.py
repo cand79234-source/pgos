@@ -862,13 +862,25 @@ def _calories_data():
         week.append({"date": ds, "wd": i, "value": (rec["value"] if rec else None),
                      "is_today": ds == td, "is_future": dd > d})
     week_total = sum((w["value"] or 0) for w in week)
-    rows = q("SELECT value FROM calories WHERE date<=?", (td,))
+    rows = q("SELECT date, value FROM calories WHERE date<=? ORDER BY date", (td,))
     # value 负=赤字(消耗)，累计已消耗 = Σ(-value)；吃多(+值)会令累计减少→进度后退
     cum = max(0, sum(-(r["value"] or 0) for r in rows))
     pct = round(cum * 100 / goal) if goal else 0
     remain = max(0, goal - cum)
+    # 历史累计序列：从 start 到 today 每天一条，用于折线图
+    history = []
+    sd = date.fromisoformat(start)
+    cur = sd
+    running = 0
+    values_by_date = {r["date"]: (r["value"] or 0) for r in rows}
+    while cur <= d:
+        ds = cur.isoformat()
+        running = max(0, running - values_by_date.get(ds, 0))
+        history.append({"date": ds, "cum": running})
+        cur += timedelta(days=1)
     return {"goal": goal, "start": start, "today": td, "week": week,
-            "week_total": week_total, "cum": cum, "pct": pct, "remain": remain}
+            "week_total": week_total, "cum": cum, "pct": pct, "remain": remain,
+            "history": history}
 
 @app.get("/calories")
 def calories_page():

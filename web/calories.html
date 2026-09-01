@@ -30,6 +30,17 @@
 .goal-right .btn{margin-left:4px}
 .note{font-size:11.5px;color:var(--muted);margin-top:16px;line-height:1.8}
 .note b{color:var(--ink)}
+/* 标题强制水平一行，解决"热量"被看成"热/量" */
+.hero h1{white-space:nowrap}
+/* 窄屏：导航优雅换行，四页始终横排全显（不影响总览/今日/复盘） */
+@media (max-width:520px){
+  .nav{flex-wrap:wrap;gap:6px 12px}
+  .nav .tabs{margin-left:auto;flex-wrap:wrap;justify-content:flex-end}
+  .nav .tabs a{padding:5px 9px;font-size:12px}
+}
+/* 折线图 */
+.chart-wrap{background:var(--card);border:1px solid var(--line);border-radius:11px;padding:14px;box-shadow:var(--sh);margin-top:10px}
+.chart-wrap canvas{width:100%;height:220px;display:block}
 </style>
 </head>
 <body>
@@ -43,7 +54,7 @@
   <!-- 总目标 + 进度 -->
   <div class="hero">
     <div class="date" id="datestr"></div>
-    <h1>热量消耗追踪</h1>
+    <h1>热量</h1>
     <div class="goal-row">
       <span class="lab">总需消耗热量</span>
       <div class="goal-right">
@@ -69,6 +80,10 @@
     进度条按「累计净消耗 ÷ 总目标」计算，吃多会让进度后退。<br>
     点任意一天可修改；想清零填 <b>0</b> 即可。
   </div>
+
+  <!-- 累计消耗趋势 -->
+  <div class="sec-title">累计消耗趋势</div>
+  <div class="chart-wrap"><canvas id="chart"></canvas></div>
 </div>
 
 <script id="caldata" type="application/json">__CAL_DATA__</script>
@@ -129,7 +144,74 @@ function render(d){
     row.onclick = () => editDay(w);
     box.appendChild(row);
   });
+  drawChart();
 }
+
+function drawChart(){
+  const hist = state.history || [];
+  const canvas = document.getElementById('chart');
+  if(!canvas || hist.length < 2) return;
+  const wrap = canvas.parentElement;
+  const dpr = window.devicePixelRatio || 1;
+  const rect = wrap.getBoundingClientRect();
+  const W = Math.max(300, rect.width - 28);
+  const H = 220;
+  canvas.width = W * dpr;
+  canvas.height = H * dpr;
+  canvas.style.width = W + 'px';
+  canvas.style.height = H + 'px';
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+  const M = {t:20, r:20, b:40, l:50};
+  const w = W - M.l - M.r, h = H - M.t - M.b;
+  const x0 = M.l, y0 = H - M.b;
+  const goal = state.goal;
+  const maxY = Math.max(goal, ...hist.map(p => p.cum), 1) * 1.1;
+  ctx.clearRect(0, 0, W, H);
+  // 横向网格
+  ctx.strokeStyle = '#e2e8f0'; ctx.lineWidth = 1; ctx.setLineDash([4,4]);
+  const ySteps = 4;
+  for(let i=0;i<=ySteps;i++){
+    const v = maxY * i / ySteps, y = y0 - (v/maxY)*h;
+    ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(x0+w, y); ctx.stroke();
+  }
+  ctx.setLineDash([]);
+  // 坐标轴
+  ctx.strokeStyle = '#94a3b8';
+  ctx.beginPath(); ctx.moveTo(x0, M.t); ctx.lineTo(x0, y0); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x0+w, y0); ctx.stroke();
+  // 目标线（橙色虚线）
+  ctx.strokeStyle = '#d97706'; ctx.lineWidth = 2; ctx.setLineDash([6,4]);
+  const yGoal = y0 - (goal/maxY)*h;
+  ctx.beginPath(); ctx.moveTo(x0, yGoal); ctx.lineTo(x0+w, yGoal); ctx.stroke();
+  ctx.setLineDash([]);
+  // 累计折线
+  const xs = hist.map((p,i) => x0 + i * (w / (hist.length - 1)));
+  const ys = hist.map(p => y0 - (p.cum / maxY) * h);
+  ctx.strokeStyle = '#0f766e'; ctx.lineWidth = 3; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  ctx.beginPath(); ctx.moveTo(xs[0], ys[0]);
+  for(let i=1;i<xs.length;i++) ctx.lineTo(xs[i], ys[i]);
+  ctx.stroke();
+  ctx.fillStyle = '#0f766e';
+  xs.forEach((cx,i) => { ctx.beginPath(); ctx.arc(cx, ys[i], 4, 0, Math.PI*2); ctx.fill(); });
+  // X 轴日期
+  ctx.fillStyle = '#64748b'; ctx.font = '12px sans-serif'; ctx.textAlign = 'center';
+  const step = Math.max(1, Math.floor(hist.length / 5));
+  for(let i=0;i<hist.length;i+=step){
+    ctx.fillText(hist[i].date.slice(5).replace('-','/'), xs[i], H-10);
+  }
+  const last = hist.length-1;
+  if(last % step !== 0) ctx.fillText(hist[last].date.slice(5).replace('-','/'), xs[last], H-10);
+  // Y 轴数值
+  ctx.textAlign = 'right';
+  for(let i=0;i<=ySteps;i++){
+    const v = Math.round(maxY * i / ySteps), y = y0 - (v/maxY)*h;
+    ctx.fillText(v, x0-8, y+4);
+  }
+  // 目标标签
+  ctx.fillStyle = '#d97706'; ctx.fillText('目标', x0+w+5, yGoal+4);
+}
+window.addEventListener('resize', drawChart);
 
 async function editGoal(){
   const v = prompt('设置总需消耗热量目标（大卡）', state.goal);
