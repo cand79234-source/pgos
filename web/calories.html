@@ -32,18 +32,18 @@
 .note b{color:var(--ink)}
 /* 标题强制水平一行，解决"热量"被看成"热/量" */
 .hero h1{white-space:nowrap}
-/* 窄屏：导航优雅换行，四页始终横排全显（不影响总览/今日/复盘） */
-@media (max-width:520px){
-  .nav{flex-wrap:wrap;gap:6px 12px}
-  .nav .tabs{margin-left:auto;flex-wrap:wrap;justify-content:flex-end}
-  .nav .tabs a{padding:5px 9px;font-size:12px}
-}
 /* 折线图 */
 .chart-wrap{background:var(--card);border:1px solid var(--line);border-radius:11px;padding:14px;box-shadow:var(--sh);margin-top:10px}
+/* 仅热量页：缩小 logo + 缩小 tab，确保 390px 四页全显 */
+body.calories .nav{padding:10px 12px !important}
+body.calories .nav .logo{font-size:9px !important}
+body.calories .nav .logo small{font-size:7px !important;letter-spacing:.05em !important}
+body.calories .nav .tabs{gap:4px !important}
+body.calories .nav .tabs a{padding:3px 6px !important;font-size:10px !important;white-space:nowrap !important}
 .chart-wrap canvas{width:100%;height:220px;display:block}
 </style>
 </head>
-<body>
+<body class="calories">
 <nav class="nav">
   <div class="logo">Personal Growth OS<small>CALORIES</small></div>
   <div class="tabs">
@@ -150,8 +150,8 @@ function render(d){
 function drawChart(){
   const hist = state.history || [];
   const canvas = document.getElementById('chart');
-  if(!canvas || hist.length < 2) return;
-  const wrap = canvas.parentElement;
+  const wrap = canvas && canvas.parentElement;
+  if(!canvas || !wrap || hist.length < 2) return;
   const dpr = window.devicePixelRatio || 1;
   const rect = wrap.getBoundingClientRect();
   const W = Math.max(300, rect.width - 28);
@@ -239,4 +239,4 @@ load();
 </script>
 </body>
 </html>
-<!-- deploy-nudge: force full rebuild 2026-09-02 calories chart + clean nav -->
+<!-- deploy-nudge: force full rebuild 2026-09-03 calories chart draws + nav four tabs visible -->
