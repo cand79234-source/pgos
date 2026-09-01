@@ -509,19 +509,26 @@ def _next_task_id(td):
 # ==================== 今日任务生成（08:00 进度驱动）====================
 def gen_today(force=False):
     td = today()
+    # 历史遗留：早期版本推入推迟区的运动/自媒体「死账」清掉（无弥补机制，堆着无意义）
+    # 放在入口，保证无论是否命中下面的「今日已生成」早退，每次调用都会执行
+    x("DELETE FROM tasks WHERE type='long_term' AND status='postponed' AND plan_id NOT IN ('english','fae')")
     # 今天已存在的长期任务（任何状态）→ 对应计划不再生成新任务，防止重复/覆盖用户推迟
     existing_plans = {t["plan_id"] for t in q("SELECT plan_id FROM tasks WHERE task_date=? AND type='long_term'", (td,))}
     if not force and existing_plans:
         return {"created": 0, "skipped": True}
 
-    # 跨天未完成（昨天及更早仍 pending/in_progress）→ postponed，记 +1 欠账
-    # postponed_at 记为原任务日期（非今天）→ 跨天延期不可撤销；手动推迟才记今天→可反悔
+    # 跨天未完成（昨天及更早仍 pending/in_progress）→ 分类处理
+    # English/FAE：有进度锚点，postponed 进推迟区并 +1 欠账，可「清零欠账」弥补
+    #    postponed_at 记为原任务日期（非今天）→ 跨天延期不可撤销；手动推迟才记今天→可反悔
+    # 运动/自媒体：每天重新生成、无锚点无弥补机制 → 过期直接作废，不占推迟区
     for t in q("SELECT id,plan_id,task_date FROM tasks WHERE task_date<? AND type='long_term' AND status IN ('pending','in_progress')", (td,)):
-        x("UPDATE tasks SET status='postponed', postponed_at=? WHERE id=?", (t["task_date"], t["id"]))
         if t["plan_id"] in ("english", "fae"):
+            x("UPDATE tasks SET status='postponed', postponed_at=? WHERE id=?", (t["task_date"], t["id"]))
             pl = q1("SELECT paused FROM plans WHERE id=?", (t["plan_id"],))
             if pl and not pl.get("paused"):
                 x("UPDATE plans SET postpone_days=COALESCE(postpone_days,0)+1 WHERE id=?", (t["plan_id"],))
+        else:
+            x("DELETE FROM tasks WHERE id=?", (t["id"],))
 
     d = datetime.now(TZ).date()
     created = 0
@@ -654,16 +661,24 @@ def weekly_review():
     temp = [t for t in tasks if t["type"] == "temporary"]
     plans = {p["id"]: p for p in q("SELECT * FROM plans")}
 
+    # 本周已过天数（周一=1 … 周日=7）：非满周手动生成周报时，分母不虚高到还没到来的天数
+    elapsed = (d - monday).days + 1
+
     def plan_stat(pid, expect_per_week):
-        """统计某长期计划本周：应做/正常完成/最低完成/未完成"""
+        """统计某长期计划本周：应做(固定目标天数)/正常完成/最低完成/未完成。
+        分母 = 计划设定的每周目标天数（非满周取已过天数），与任务是否生成/推迟/作废无关；
+        分子 = 实际完成天数（按日期去重）。漏做·推迟·放弃一律不进分子，分母不动。"""
         pt = [t for t in long_term if t["plan_id"] == pid]
-        planned = len([t for t in pt if t["status"] != "postponed"])
-        done_normal = len([t for t in pt if t["status"] == "completed" and (t.get("level") != "minimum")])
-        done_min = len([t for t in pt if t["status"] == "completed" and t.get("level") == "minimum"])
-        undone = len([t for t in pt if t["status"] in ("pending", "in_progress")])
+        planned = max(0, min(expect_per_week, elapsed))
+        dn = {t["task_date"] for t in pt if t["status"] == "completed" and t.get("level") != "minimum"}
+        dm = {t["task_date"] for t in pt if t["status"] == "completed" and t.get("level") == "minimum"}
+        done_normal = len(dn)
+        done_min = len(dm - dn)            # 同一天既有正常又有最低剂量时只算一次
+        total_done = len(dn | dm)
+        undone = max(0, planned - total_done)
         postponed = len([t for t in pt if t["status"] == "postponed"])
         return {"planned": planned, "done_normal": done_normal, "done_min": done_min,
-                "undone": undone, "postponed": postponed, "total_done": done_normal + done_min}
+                "undone": undone, "postponed": postponed, "total_done": total_done}
 
     def light(done, planned):
         """打灯：完成>=应做🟢 / 50-99%🟡 / <50%🔴"""
@@ -725,11 +740,11 @@ def weekly_review():
     md_lines = []
     md_lines.append(f"# 📊 本周执行报告（{wk_start} ~ {wk_end}）\n")
     md_lines.append("## 🚦 各计划本周情况")
-    md_lines.append(f"- 🟢 完成率按「实际完成 / 应做」计算")
-    md_lines.append(f"- **English** {light(es['total_done'], es['planned'])}：应做 {es['planned']} 天，正常完成 {es['done_normal']}，最低剂量 {es['done_min']}，未完成 {es['undone']}，延期 {es['postponed']}")
-    md_lines.append(f"- **FAE** {light(fs['total_done'], fs['planned'])}：应做 {fs['planned']} 天，正常完成 {fs['done_normal']}，最低任务 {fs['done_min']}，未完成 {fs['undone']}，延期 {fs['postponed']}（当前 Week {fae_week or '—'}）")
+    md_lines.append(f"- 🟢 完成率 = 实际完成 / 应做；应做 = 计划设定的每周目标天数，漏做·延期·放弃均不减分母")
+    md_lines.append(f"- **English** {light(es['total_done'], es['planned'])}：应做 {es['planned']} 天，正常完成 {es['done_normal']}，最低剂量 {es['done_min']}，未完成 {es['undone']}（含延期 {es['postponed']}）")
+    md_lines.append(f"- **FAE** {light(fs['total_done'], fs['planned'])}：应做 {fs['planned']} 天，正常完成 {fs['done_normal']}，最低任务 {fs['done_min']}，未完成 {fs['undone']}（含延期 {fs['postponed']}）（当前 Week {fae_week or '—'}）")
     md_lines.append(f"- **运动** {light(ex['total_done'], ex['planned'])}：应做 {ex['planned']} 天，实际完成 {ex['total_done']}（目标每周 5 天）")
-    md_lines.append(f"- **自媒体视频** {light(cs['total_done'], cs['planned'])}：应做 {cs['planned']} 天，完成 {cs['done_normal']}，未完成 {cs['undone']}")
+    md_lines.append(f"- **自媒体视频** {light(cs['total_done'], cs['planned'])}：应做 {cs['planned']} 天，完成 {cs['total_done']}，未完成 {cs['undone']}")
     md_lines.append(f"- **临时任务**：完成 {temp_done} / 未完成 {temp_undone} / 延期 {temp_postponed}\n")
     md_lines.append("## 🧭 长期计划进度")
     md_lines.append(f"- **English**：{eng_prog.get('stage_name') or '—'} · 全局进度 **{eng_prog.get('global_pct', 0)}%**（当前阶段 {eng_prog.get('stage_pct', 0)}%）· 下一检查点 {display_cp(eng)}")
@@ -750,10 +765,10 @@ def weekly_review():
     h = []
     h.append(f"<h3>📊 本周执行报告<br><small>{wk_start} ~ {wk_end}</small></h3>")
     h.append("<h4>🚦 各计划本周情况</h4>")
-    h.append(f"<p>{light_html(light(es['total_done'], es['planned']))} <b>English</b>：应做 {es['planned']} 天 · 正常 {es['done_normal']} · 最低 {es['done_min']} · 未完成 {es['undone']} · 延期 {es['postponed']}</p>")
-    h.append(f"<p>{light_html(light(fs['total_done'], fs['planned']))} <b>FAE</b>：应做 {fs['planned']} 天 · 正常 {fs['done_normal']} · 最低 {fs['done_min']} · 未完成 {fs['undone']} · 延期 {fs['postponed']}（Week {fae_week or '—'}）</p>")
+    h.append(f"<p>{light_html(light(es['total_done'], es['planned']))} <b>English</b>：应做 {es['planned']} 天 · 正常 {es['done_normal']} · 最低 {es['done_min']} · 未完成 {es['undone']}（含延期 {es['postponed']}）</p>")
+    h.append(f"<p>{light_html(light(fs['total_done'], fs['planned']))} <b>FAE</b>：应做 {fs['planned']} 天 · 正常 {fs['done_normal']} · 最低 {fs['done_min']} · 未完成 {fs['undone']}（含延期 {fs['postponed']}）（Week {fae_week or '—'}）</p>")
     h.append(f"<p>{light_html(light(ex['total_done'], ex['planned']))} <b>运动</b>：应做 {ex['planned']} 天 · 实际 {ex['total_done']}（目标每周 5 天）</p>")
-    h.append(f"<p>{light_html(light(cs['total_done'], cs['planned']))} <b>自媒体视频</b>：应做 {cs['planned']} 天 · 完成 {cs['done_normal']} · 未完成 {cs['undone']}</p>")
+    h.append(f"<p>{light_html(light(cs['total_done'], cs['planned']))} <b>自媒体视频</b>：应做 {cs['planned']} 天 · 完成 {cs['total_done']} · 未完成 {cs['undone']}</p>")
     h.append(f"<p>📌 <b>临时任务</b>：完成 {temp_done} / 未完成 {temp_undone} / 延期 {temp_postponed}</p>")
     h.append("<h4>🧭 长期计划进度</h4>")
     h.append(f"<p>🇬🇧 English：{eng_prog.get('stage_name') or '—'} · 全局 <b>{eng_prog.get('global_pct', 0)}%</b>（阶段内 {eng_prog.get('stage_pct', 0)}%）· 检查点 {display_cp(eng)}</p>")
@@ -893,8 +908,7 @@ async def add_task(req: Request):
     title = re.sub(r"(明天|后天|今天|今晚|明晚|周[一二三四五六日天]|周末|\d{1,2}月\d{1,2}[日号]?|\d{1,2}[:：点]\d{0,2}|之前|以前|下午|晚上|上午|去|我|要)", " ", text)
     title = re.sub(r"\s+", " ", title).strip(" ，。,.！!？?的") or text
 
-    seq = len(q("SELECT id FROM tasks WHERE id LIKE ?", (f"t_{td.replace('-','')}_%",))) + 1
-    tid = f"t_{td.replace('-','')}_{seq:03d}"
+    tid = _next_task_id(td)   # 与长期任务同一套 max+1 规则，避免断号时主键冲突 500
     x("INSERT INTO tasks(id,title,type,task_date,due_date,scheduled,status,raw_input,created_at) VALUES(?,?,'temporary',?,?,?,?,?,?)",
       (tid, title, task_date, due, scheduled, "pending", text, now()))
     return {"ok": True, "task": q1("SELECT * FROM tasks WHERE id=?", (tid,))}

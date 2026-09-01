@@ -180,6 +180,7 @@ function fillPosSelects(curWeek,curDay){
   let idx=0;for(let i=0;i<EN_STAGES.length;i++){if(curWeek>=EN_WEEK_START[i]&&curWeek<EN_WEEK_START[i]+EN_STAGES[i].weeks)idx=i;}
   sc.value=String(idx);fillPosWeek(idx);
   $('posWeek').value=String(curWeek);
+  $('posDay').innerHTML=Array.from({length:7},(_,k)=>`<option value="${k+1}">Day ${k+1}</option>`).join('');
   $('posDay').value=String(Math.min(7,Math.max(1,curDay||1)));
 }
 $('posStage').addEventListener('change',e=>fillPosWeek(parseInt(e.target.value,10)));
