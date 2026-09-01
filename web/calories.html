@@ -34,12 +34,6 @@
 .hero h1{white-space:nowrap}
 /* 折线图 */
 .chart-wrap{background:var(--card);border:1px solid var(--line);border-radius:11px;padding:14px;box-shadow:var(--sh);margin-top:10px}
-/* 仅热量页：缩小 logo + 缩小 tab，确保 390px 四页全显 */
-body.calories .nav{padding:10px 12px !important}
-body.calories .nav .logo{font-size:9px !important}
-body.calories .nav .logo small{font-size:7px !important;letter-spacing:.05em !important}
-body.calories .nav .tabs{gap:4px !important}
-body.calories .nav .tabs a{padding:3px 6px !important;font-size:10px !important;white-space:nowrap !important}
 .chart-wrap canvas{width:100%;height:220px;display:block}
 </style>
 </head>
@@ -162,7 +156,7 @@ function drawChart(){
   canvas.style.height = H + 'px';
   const ctx = canvas.getContext('2d');
   ctx.scale(dpr, dpr);
-  const M = {t:20, r:20, b:40, l:50};
+  const M = {t:20, r:28, b:44, l:50};
   const w = W - M.l - M.r, h = H - M.t - M.b;
   const x0 = M.l, y0 = H - M.b;
   const goal = state.goal;
@@ -194,22 +188,26 @@ function drawChart(){
   ctx.stroke();
   ctx.fillStyle = '#0f766e';
   xs.forEach((cx,i) => { ctx.beginPath(); ctx.arc(cx, ys[i], 4, 0, Math.PI*2); ctx.fill(); });
-  // X 轴日期
-  ctx.fillStyle = '#64748b'; ctx.font = '12px sans-serif'; ctx.textAlign = 'center';
-  const step = Math.max(1, Math.floor(hist.length / 5));
-  for(let i=0;i<hist.length;i+=step){
-    ctx.fillText(hist[i].date.slice(5).replace('-','/'), xs[i], H-10);
-  }
-  const last = hist.length-1;
-  if(last % step !== 0) ctx.fillText(hist[last].date.slice(5).replace('-','/'), xs[last], H-10);
+  // X 轴日期（动态间隔，边缘标签靠内对齐，避免裁切）
+  ctx.fillStyle = '#64748b'; ctx.font = '10px sans-serif';
+  ctx.textBaseline = 'top';
+  const step = Math.max(1, Math.ceil(hist.length / 6));
+  const labelIdx = [];
+  for(let i=0;i<hist.length;i+=step) labelIdx.push(i);
+  if(labelIdx[labelIdx.length-1] !== hist.length-1) labelIdx.push(hist.length-1);
+  labelIdx.forEach(i => {
+    ctx.textAlign = i===0 ? 'left' : (i===hist.length-1 ? 'right' : 'center');
+    ctx.fillText(hist[i].date.slice(5).replace('-','/'), xs[i], H-M.b+8);
+  });
   // Y 轴数值
-  ctx.textAlign = 'right';
+  ctx.textAlign = 'right'; ctx.textBaseline = 'alphabetic';
   for(let i=0;i<=ySteps;i++){
     const v = Math.round(maxY * i / ySteps), y = y0 - (v/maxY)*h;
     ctx.fillText(v, x0-8, y+4);
   }
-  // 目标标签
-  ctx.fillStyle = '#d97706'; ctx.fillText('目标', x0+w+5, yGoal+4);
+  // 目标标签（画在目标线左端上方，避免被右边缘裁切）
+  ctx.fillStyle = '#d97706'; ctx.textAlign = 'left';
+  ctx.fillText('目标 ' + goal, x0+4, yGoal-6);
 }
 window.addEventListener('resize', drawChart);
 
@@ -239,4 +237,4 @@ load();
 </script>
 </body>
 </html>
-<!-- deploy-nudge: force full rebuild 2026-09-03 calories chart draws + nav four tabs visible -->
+<!-- deploy-nudge: force full rebuild 2026-09-01b nav responsive global + chart date labels rotated -->
