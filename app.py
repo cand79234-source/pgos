@@ -9,7 +9,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 import apscheduler.schedulers.background as bg
 
@@ -846,12 +846,7 @@ def overview_page():
     return FileResponse(str(WEB / "overview.html"))
 
 # ---- 热量追踪页（独立模块：新增，不改动总览/今日/复盘任何逻辑） ----
-@app.get("/calories")
-def calories_page():
-    return FileResponse(str(WEB / "calories.html"))
-
-@app.get("/api/calories")
-def api_calories():
+def _calories_data():
     goal_row = q1("SELECT v FROM meta WHERE k='calorie_goal'")
     goal = int(goal_row["v"]) if goal_row and goal_row.get("v") else 3000
     en = q1("SELECT start_date FROM plans WHERE id='english'")
@@ -874,6 +869,17 @@ def api_calories():
     remain = max(0, goal - cum)
     return {"goal": goal, "start": start, "today": td, "week": week,
             "week_total": week_total, "cum": cum, "pct": pct, "remain": remain}
+
+@app.get("/calories")
+def calories_page():
+    # 服务端预渲染数据：首屏 HTML 直接带数据，不再等前端 fetch，解决冷启动感知慢
+    html = (WEB / "calories.html").read_text(encoding="utf-8")
+    html = html.replace("__CAL_DATA__", json.dumps(_calories_data(), ensure_ascii=False))
+    return HTMLResponse(html)
+
+@app.get("/api/calories")
+def api_calories():
+    return _calories_data()
 
 @app.post("/api/calories")
 async def set_calorie(req: Request):
