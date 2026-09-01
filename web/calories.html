@@ -188,13 +188,18 @@ function drawChart(){
   ctx.stroke();
   ctx.fillStyle = '#0f766e';
   xs.forEach((cx,i) => { ctx.beginPath(); ctx.arc(cx, ys[i], 4, 0, Math.PI*2); ctx.fill(); });
-  // X 轴日期（动态间隔，边缘标签靠内对齐，避免裁切）
+  // X 轴日期（动态间隔，首尾必显，避免末尾挤压重叠）
   ctx.fillStyle = '#64748b'; ctx.font = '10px sans-serif';
   ctx.textBaseline = 'top';
-  const step = Math.max(1, Math.ceil(hist.length / 6));
+  const maxLabels = 6;
+  const step = Math.max(1, Math.ceil((hist.length - 1) / (maxLabels - 1)));
   const labelIdx = [];
   for(let i=0;i<hist.length;i+=step) labelIdx.push(i);
-  if(labelIdx[labelIdx.length-1] !== hist.length-1) labelIdx.push(hist.length-1);
+  if(labelIdx[labelIdx.length-1] !== hist.length-1){
+    const gap = hist.length - 1 - labelIdx[labelIdx.length-1];
+    if(gap <= step / 2) labelIdx[labelIdx.length-1] = hist.length - 1;
+    else labelIdx.push(hist.length - 1);
+  }
   labelIdx.forEach(i => {
     ctx.textAlign = i===0 ? 'left' : (i===hist.length-1 ? 'right' : 'center');
     ctx.fillText(hist[i].date.slice(5).replace('-','/'), xs[i], H-M.b+8);
@@ -237,4 +242,4 @@ load();
 </script>
 </body>
 </html>
-<!-- deploy-nudge: force full rebuild 2026-09-01b nav responsive global + chart date labels rotated -->
+<!-- deploy-nudge: force full rebuild 2026-09-01c chart date spacing + global nav responsive -->
