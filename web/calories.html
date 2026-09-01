@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0,viewport-fit=cover">
+<title>热量 · Personal Growth OS</title>
+<link rel="stylesheet" href="/static/style.css">
+<meta name="theme-color" content="#111827">
+<style>
+:root{--green:#16a34a}
+.wrap{max-width:560px;margin:0 auto;padding:14px 16px 40px}
+.cal-row{display:flex;align-items:center;justify-content:space-between;padding:13px 14px;background:var(--card);border:1px solid var(--line);border-radius:11px;margin-bottom:9px;box-shadow:var(--sh);cursor:pointer}
+.cal-row:active{transform:scale(.99)}
+.cal-row .cd{font-weight:700;font-size:15px}
+.cal-row .cdate{font-size:11px;color:var(--muted);margin-top:2px}
+.goalbox{display:flex;align-items:baseline;gap:6px;flex-wrap:wrap;margin-top:10px}
+.goalbox .lab{font-size:13px;color:var(--muted);font-weight:700}
+.goalbox .num{font-size:26px;font-weight:800;color:var(--brand);line-height:1}
+.goalbox .unit{font-size:12px;color:var(--muted)}
+.goalbox .btn{margin-left:auto}
+.note{font-size:11.5px;color:var(--muted);margin-top:16px;line-height:1.8}
+.note b{color:var(--ink)}
+</style>
+</head>
+<body>
+<nav class="nav">
+  <div class="logo">Personal Growth OS<small>CALORIES</small></div>
+  <div class="tabs">
+    <a href="/overview">总览</a><a href="/">今日</a><a href="/reviews">复盘</a><a href="/calories" class="on">热量</a>
+  </div>
+</nav>
+<div class="wrap">
+  <!-- 总目标 + 进度 -->
+  <div class="hero">
+    <div class="date" id="datestr"></div>
+    <h1>热量消耗追踪</h1>
+    <div class="goalbox">
+      <span class="lab">总需消耗热量</span>
+      <span class="num" id="goal">3000</span>
+      <span class="unit">大卡</span>
+      <button class="btn" onclick="editGoal()">✏️ 修改</button>
+    </div>
+    <div class="bar" style="margin-top:14px"><i id="bar" style="width:0%"></i></div>
+    <div class="pct"><span id="pct">0%</span><span id="cumline">已消耗 0 / 3000 大卡</span></div>
+    <div style="font-size:11.5px;color:var(--muted);margin-top:6px">
+      自 <b id="start" style="color:var(--brand)"></b> 起累计消耗 <b id="cum"></b> 大卡 · 还差 <b id="remain"></b>
+    </div>
+  </div>
+
+  <!-- 本周 -->
+  <div class="sec-title"><span class="n">周</span>本周 <span id="wkrange" style="font-weight:600;color:var(--muted);font-size:12px"></span></div>
+  <div style="margin-bottom:10px"><span id="wktotal" class="chip plan">总赤字 0 大卡</span></div>
+  <div id="days"></div>
+
+  <div class="note">
+    每天填一个净值：<b style="color:var(--green)">负值 = 赤字</b>（比计划少吃了 / 多动消耗了），<b style="color:var(--orange)">正值 = 盈余</b>（吃多了）。<br>
+    进度条按「累计净消耗 ÷ 总目标」计算，吃多会让进度后退。<br>
+    点任意一天可修改；想清零填 <b>0</b> 即可。
+  </div>
+</div>
+
+<script>
+const WD = ['周一','周二','周三','周四','周五','周六','周日'];
+let state = {};
+
+async function load(){
+  const d = await (await fetch('/api/calories')).json();
+  state = d;
+  render(d);
+}
+
+function render(d){
+  document.getElementById('datestr').textContent = d.today + ' · 业务日';
+  document.getElementById('goal').textContent = d.goal;
+  document.getElementById('bar').style.width = Math.min(100, d.pct) + '%';
+  document.getElementById('pct').textContent = d.pct + '%';
+  document.getElementById('cum').textContent = d.cum;
+  document.getElementById('remain').textContent = d.remain;
+  document.getElementById('start').textContent = d.start;
+  document.getElementById('cumline').textContent = `已消耗 ${d.cum} / ${d.goal} 大卡`;
+  document.getElementById('wkrange').textContent = d.week[0].date + ' ~ ' + d.week[6].date;
+
+  const wt = d.week_total;
+  const wtEl = document.getElementById('wktotal');
+  wtEl.textContent = (wt < 0 ? '总赤字 ' + wt : '总盈余 +' + wt) + ' 大卡';
+  wtEl.className = 'chip ' + (wt < 0 ? 'plan' : 'warn');
+
+  const box = document.getElementById('days');
+  box.innerHTML = '';
+  d.week.forEach(w => {
+    const row = document.createElement('div');
+    row.className = 'cal-row';
+    const left = document.createElement('div');
+    left.innerHTML = `<div class="cd">${WD[w.wd]}</div><div class="cdate">${w.date}</div>`;
+    const right = document.createElement('div');
+    if (w.value === null){
+      right.innerHTML = `<span class="chip">未填</span>`;
+    } else {
+      const cls = w.value < 0 ? 'plan' : 'warn';
+      const txt = w.value < 0 ? ('赤字 ' + w.value) : ('盈余 +' + w.value);
+      right.innerHTML = `<span class="chip ${cls}">${txt}</span>`;
+    }
+    if (w.is_today) right.innerHTML += ' <span class="chip" style="background:var(--brand-bg);color:var(--brand)">今天</span>';
+    row.appendChild(left); row.appendChild(right);
+    row.onclick = () => editDay(w);
+    box.appendChild(row);
+  });
+}
+
+async function editGoal(){
+  const v = prompt('设置总需消耗热量目标（大卡）', state.goal);
+  if (v === null) return;
+  const n = parseInt(v.trim(), 10);
+  if (isNaN(n) || n < 1){ alert('请输入正整数'); return; }
+  await fetch('/api/calories/goal', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({value:n})});
+  load();
+}
+
+async function editDay(w){
+  const cur = w.value === null ? '' : w.value;
+  const v = prompt(`${WD[w.wd]}（${w.date}）\n负值=赤字(消耗)，正值=盈余(吃多)\n例如 -300 或 +300；填 0 清零`, cur);
+  if (v === null) return;
+  const s = v.trim();
+  if (s === ''){ alert('请输入数值（负数或正数），不能留空'); return; }
+  let n;
+  try { n = parseInt(s, 10); } catch(e){ alert('请输入整数'); return; }
+  if (isNaN(n)){ alert('请输入整数'); return; }
+  await fetch('/api/calories', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({date:w.date, value:n})});
+  load();
+}
+
+load();
+</script>
+</body>
+</html>

@@ -57,3 +57,15 @@ CREATE TABLE IF NOT EXISTS reviews (
     content_html TEXT,
     created_at  TEXT NOT NULL
 );
+
+-- 热量记录：每天一行（value 负=赤字/消耗，正=盈余/吃多；NULL 表示未填）
+CREATE TABLE IF NOT EXISTS calories (
+    date  TEXT PRIMARY KEY,
+    value INTEGER
+);
+
+-- 键值配置（热量总目标等）
+CREATE TABLE IF NOT EXISTS meta (
+    k TEXT PRIMARY KEY,
+    v TEXT
+);

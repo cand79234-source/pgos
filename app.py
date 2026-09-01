@@ -845,6 +845,65 @@ def reviews_page():
 def overview_page():
     return FileResponse(str(WEB / "overview.html"))
 
+# ---- 热量追踪页（独立模块：新增，不改动总览/今日/复盘任何逻辑） ----
+@app.get("/calories")
+def calories_page():
+    return FileResponse(str(WEB / "calories.html"))
+
+@app.get("/api/calories")
+def api_calories():
+    goal_row = q1("SELECT v FROM meta WHERE k='calorie_goal'")
+    goal = int(goal_row["v"]) if goal_row and goal_row.get("v") else 3000
+    en = q1("SELECT start_date FROM plans WHERE id='english'")
+    start = (en["start_date"][:10] if en and en.get("start_date") else today())
+    td = today()
+    d = date.fromisoformat(td)
+    monday = d - timedelta(days=d.weekday())   # weekday(): 周一=0
+    week = []
+    for i in range(7):
+        dd = monday + timedelta(days=i)
+        ds = dd.isoformat()
+        rec = q1("SELECT value FROM calories WHERE date=?", (ds,))
+        week.append({"date": ds, "wd": i, "value": (rec["value"] if rec else None),
+                     "is_today": ds == td, "is_future": dd > d})
+    week_total = sum((w["value"] or 0) for w in week)
+    rows = q("SELECT value FROM calories WHERE date<=?", (td,))
+    # value 负=赤字(消耗)，累计已消耗 = Σ(-value)；吃多(+值)会令累计减少→进度后退
+    cum = max(0, sum(-(r["value"] or 0) for r in rows))
+    pct = round(cum * 100 / goal) if goal else 0
+    remain = max(0, goal - cum)
+    return {"goal": goal, "start": start, "today": td, "week": week,
+            "week_total": week_total, "cum": cum, "pct": pct, "remain": remain}
+
+@app.post("/api/calories")
+async def set_calorie(req: Request):
+    body = await req.json()
+    ds = (body.get("date") or "").strip()
+    if not re.match(r"^\d{4}-\d{2}-\d{2}$", ds):
+        raise HTTPException(400, "日期格式应为 YYYY-MM-DD")
+    try:
+        val = int(body.get("value"))
+    except (TypeError, ValueError):
+        raise HTTPException(400, "数值必须为整数")
+    if val < -100000 or val > 100000:
+        raise HTTPException(400, "数值超出合理范围")
+    x("INSERT INTO calories(date,value) VALUES(?,?) "
+      "ON CONFLICT(date) DO UPDATE SET value=excluded.value", (ds, val))
+    return {"ok": True, "date": ds, "value": val}
+
+@app.post("/api/calories/goal")
+async def set_goal(req: Request):
+    body = await req.json()
+    try:
+        g = int(body.get("value"))
+    except (TypeError, ValueError):
+        raise HTTPException(400, "目标必须为整数")
+    if g < 1:
+        raise HTTPException(400, "目标必须为正整数")
+    x("INSERT INTO meta(k,v) VALUES('calorie_goal',?) "
+      "ON CONFLICT(k) DO UPDATE SET v=excluded.v", (str(g),))
+    return {"ok": True, "goal": g}
+
 # ---- 今日视图 ----
 @app.get("/api/today")
 def api_today():
