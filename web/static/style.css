@@ -8,13 +8,13 @@ body{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei
 .nav .tabs{margin-left:auto;display:flex;gap:6px}
 .nav .tabs a{color:#cbd5e1;text-decoration:none;font-size:13px;font-weight:600;padding:6px 12px;border-radius:999px;background:rgba(255,255,255,.07)}
 .nav .tabs a.on{background:#5eead4;color:#0c2b28}
-/* 窄屏：导航换行，logo 不竖排，四页 tab 另起一行横向全显（四页共用） */
+/* 窄屏：导航整体右对齐、微放大，四 tab 横排不竖排（四页共用） */
 @media (max-width:520px){
   .nav{flex-wrap:wrap;gap:4px 0;padding:10px 12px}
-  .nav .logo{font-size:10px;white-space:nowrap}
-  .nav .logo small{font-size:7px;letter-spacing:.05em}
-  .nav .tabs{width:100%;margin-left:0;display:flex;flex-wrap:wrap;justify-content:flex-start;gap:3px}
-  .nav .tabs a{padding:3px 6px;font-size:10px;white-space:nowrap}
+  .nav .logo{font-size:12px;white-space:nowrap}
+  .nav .logo small{font-size:8px;letter-spacing:.05em}
+  .nav .tabs{width:100%;margin-left:0;display:flex;flex-wrap:nowrap;justify-content:flex-end;gap:4px}
+  .nav .tabs a{flex-shrink:0;min-width:max-content;padding:4px 8px;font-size:11px;white-space:nowrap}
 }
 .hero{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:16px;margin-top:14px;box-shadow:var(--sh)}
 .hero .date{font-size:13px;color:var(--muted);font-weight:600}
